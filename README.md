@@ -5,6 +5,13 @@ The controller sends MIDI CC messages for six stomp switches, shows status on a
 128x64 SSD1306 OLED, and includes an onboard edit mode for changing each
 switch's HX Stomp assignment without reflashing the firmware.
 
+<p align="center">
+  <img src="docs/images/stompbox-build.webp" alt="Stompbox build showing home and edit mode OLED screens" width="520">
+</p>
+
+> **Work in progress:** this project is currently a work in progress. 3D print
+> files for a case will be added as the enclosure design matures.
+
 ## Board Target
 
 - Board: Adafruit KB2040
