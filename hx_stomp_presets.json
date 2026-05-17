@@ -1,0 +1,235 @@
+{
+  "headers": [
+    "Section",
+    "CC#",
+    "Value",
+    "Function",
+    "Notes"
+  ],
+  "presets": [
+    {
+      "sourceRow": 2,
+      "section": "Footswitch Assign",
+      "cc": "49",
+      "value": "127",
+      "function": "Emulates FS1"
+    },
+    {
+      "sourceRow": 3,
+      "section": "Footswitch Assign",
+      "cc": "50",
+      "value": "127",
+      "function": "Emulates FS2"
+    },
+    {
+      "sourceRow": 4,
+      "section": "Footswitch Assign",
+      "cc": "51",
+      "value": "127",
+      "function": "Emulates FS3"
+    },
+    {
+      "sourceRow": 5,
+      "section": "Footswitch Assign",
+      "cc": "52",
+      "value": "127",
+      "function": "Emulates FS4"
+    },
+    {
+      "sourceRow": 6,
+      "section": "Footswitch Assign",
+      "cc": "53",
+      "value": "127",
+      "function": "Emulates FS5"
+    },
+    {
+      "sourceRow": 7,
+      "section": "Looper Controls",
+      "cc": "60",
+      "value": "127",
+      "function": "Looper Record"
+    },
+    {
+      "sourceRow": 8,
+      "section": "Looper Controls",
+      "cc": "60",
+      "value": "63",
+      "function": "Looper Overdub"
+    },
+    {
+      "sourceRow": 9,
+      "section": "Looper Controls",
+      "cc": "61",
+      "value": "127",
+      "function": "Looper Play"
+    },
+    {
+      "sourceRow": 10,
+      "section": "Looper Controls",
+      "cc": "61",
+      "value": "63",
+      "function": "Looper Stop"
+    },
+    {
+      "sourceRow": 11,
+      "section": "Looper Controls",
+      "cc": "62",
+      "value": "127",
+      "function": "Looper Play Once"
+    },
+    {
+      "sourceRow": 12,
+      "section": "Looper Controls",
+      "cc": "63",
+      "value": "127",
+      "function": "Looper Undo/Redo"
+    },
+    {
+      "sourceRow": 13,
+      "section": "Looper Controls",
+      "cc": "65",
+      "value": "63",
+      "function": "Looper Forward"
+    },
+    {
+      "sourceRow": 14,
+      "section": "Looper Controls",
+      "cc": "65",
+      "value": "127",
+      "function": "Looper Reverse"
+    },
+    {
+      "sourceRow": 15,
+      "section": "Looper Controls",
+      "cc": "66",
+      "value": "63",
+      "function": "Looper Full Speed"
+    },
+    {
+      "sourceRow": 16,
+      "section": "Looper Controls",
+      "cc": "66",
+      "value": "127",
+      "function": "Looper Half Speed"
+    },
+    {
+      "sourceRow": 17,
+      "section": "Tempo",
+      "cc": "64",
+      "value": "127",
+      "function": "Tap Tempo"
+    },
+    {
+      "sourceRow": 18,
+      "section": "Tuner",
+      "cc": "68",
+      "value": "127",
+      "function": "Tuner screen on/off"
+    },
+    {
+      "sourceRow": 19,
+      "section": "Snapshot",
+      "cc": "69",
+      "value": "0",
+      "function": "Snapshot 1"
+    },
+    {
+      "sourceRow": 20,
+      "section": "Snapshot",
+      "cc": "69",
+      "value": "1",
+      "function": "Snapshot 2"
+    },
+    {
+      "sourceRow": 21,
+      "section": "Snapshot",
+      "cc": "69",
+      "value": "2",
+      "function": "Snapshot 3"
+    },
+    {
+      "sourceRow": 22,
+      "section": "Snapshot",
+      "cc": "69",
+      "value": "8",
+      "function": "Next Snapshot"
+    },
+    {
+      "sourceRow": 23,
+      "section": "Snapshot",
+      "cc": "69",
+      "value": "9",
+      "function": "Previous Snapshot"
+    },
+    {
+      "sourceRow": 24,
+      "section": "All Bypass",
+      "cc": "70",
+      "value": "63",
+      "function": "Bypass On"
+    },
+    {
+      "sourceRow": 25,
+      "section": "All Bypass",
+      "cc": "70",
+      "value": "127",
+      "function": "Bypass Off"
+    },
+    {
+      "sourceRow": 26,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "0",
+      "function": "Stomp"
+    },
+    {
+      "sourceRow": 27,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "1",
+      "function": "Scroll"
+    },
+    {
+      "sourceRow": 28,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "2",
+      "function": "Preset"
+    },
+    {
+      "sourceRow": 29,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "3",
+      "function": "Snapshot"
+    },
+    {
+      "sourceRow": 30,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "4",
+      "function": "Next Footswitch"
+    },
+    {
+      "sourceRow": 31,
+      "section": "Footswitch Mode",
+      "cc": "71",
+      "value": "5",
+      "function": "Previous Footswitch"
+    },
+    {
+      "sourceRow": 32,
+      "section": "Preset",
+      "cc": "72",
+      "value": "63",
+      "function": "Previous Preset"
+    },
+    {
+      "sourceRow": 33,
+      "section": "Preset",
+      "cc": "72",
+      "value": "127",
+      "function": "Next Preset"
+    }
+  ]
+}
