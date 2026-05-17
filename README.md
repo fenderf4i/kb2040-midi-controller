@@ -1,9 +1,9 @@
-# USB MIDI Controller - Adafruit KB2040 Port
+# KB2040 USB MIDI Stompbox Controller
 
-This is the Adafruit KB2040 / RP2040 port of
-`milestone_003_promicro_u8x8_eeprom`. It keeps the same controller behavior:
-six USB MIDI CC buttons, two edit buttons, U8g2 SSD1306 display graphics,
-HX Stomp preset scrolling, and saved button assignments after power cycling.
+Firmware for a six-switch USB MIDI stompbox built around an Adafruit KB2040.
+The controller sends MIDI CC messages for six stomp switches, shows status on a
+128x64 SSD1306 OLED, and includes an onboard edit mode for changing each
+switch's HX Stomp assignment without reflashing the firmware.
 
 ## Board Target
 
@@ -21,11 +21,11 @@ pin remap.
 - MIDI channel: `1`
 - Press debounce: `25 ms`
 - Edit mode hold: `4 seconds`
-- Pressing a MIDI button sends one USB MIDI Control Change message.
+- Pressing a stomp switch sends one USB MIDI Control Change message.
 - The last-button display returns to the home screen after `5 seconds`.
-- Holding a MIDI button enters edit mode for that button after the initial
+- Holding a stomp switch enters edit mode for that switch after the initial
   normal MIDI message.
-- Pressing the same MIDI button while editing exits edit mode.
+- Pressing the same stomp switch while editing exits edit mode.
 - Previous/next edit buttons scroll the HX Stomp preset list.
 - Edited assignments are saved using the RP2040 core's flash-backed
   `EEPROM.h` emulation.
