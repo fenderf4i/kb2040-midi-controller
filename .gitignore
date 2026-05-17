@@ -1,0 +1,5 @@
+*.zip
+*.uf2
+.DS_Store
+Thumbs.db
+reference_milestone_003/
