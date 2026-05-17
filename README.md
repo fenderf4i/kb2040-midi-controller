@@ -1,9 +1,10 @@
-# KB2040 USB MIDI Stompbox Controller
+# KB2040 USB MIDI Controller for Line 6 HX Stomp
 
-Firmware for a six-switch USB MIDI stompbox built around an Adafruit KB2040.
-The controller sends MIDI CC messages for six stomp switches, shows status on a
-128x64 SSD1306 OLED, and includes an onboard edit mode for changing each
-switch's HX Stomp assignment without reflashing the firmware.
+Firmware for a six-switch USB MIDI stompbox controller for the Line 6 HX Stomp,
+built around an Adafruit KB2040. The controller sends MIDI CC messages for six
+stomp switches, shows status on a 128x64 SSD1306 OLED, and includes an onboard
+edit mode for changing each switch's HX Stomp assignment without reflashing the
+firmware.
 
 <p align="center">
   <img src="docs/images/stompbox-build.webp" alt="Stompbox build showing home and edit mode OLED screens" width="520">
