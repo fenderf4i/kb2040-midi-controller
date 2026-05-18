@@ -16,13 +16,18 @@ firmware.
 ## Board Target
 
 - Board: Adafruit KB2040
-- Arduino core: Raspberry Pi Pico/RP2040/RP2350 by Earle F. Philhower, III
+- Firmware framework: Arduino sketch using the Raspberry Pi Pico/RP2040/RP2350
+  core by Earle F. Philhower, III
 - FQBN: `rp2040:rp2040:adafruit_kb2040:usbstack=tinyusb`
 - USB stack: Adafruit TinyUSB
 
-The KB2040 uses RP2040 GPIO numbers as Arduino pin numbers. For example,
-Arduino pin `4` is GPIO4 / the board pad labeled `D4`, not an AVR Pro Micro
-pin remap.
+This is a KB2040/RP2040 project, not an Arduino-branded board. The firmware is
+written as an Arduino `.ino` sketch and built with Arduino IDE or Arduino CLI
+through the Philhower RP2040 board core.
+
+The sketch pin numbers match the KB2040's RP2040 GPIO numbers for the digital
+pins used here. For example, sketch pin `4` is GPIO4 / the board pad labeled
+`D4`, not an AVR Pro Micro pin remap.
 
 ## Behavior
 
@@ -40,24 +45,24 @@ pin remap.
 
 ## Button Wiring
 
-Wire each button between the listed GPIO pin and `GND`. The firmware uses
+Wire each button between the listed KB2040 board pad and `GND`. The firmware uses
 `INPUT_PULLUP`, so a pressed button reads `LOW`.
 
-| Button | KB2040 GPIO / Arduino Pin | Default MIDI CC | Press Value |
+| Button | KB2040 Board Pad / GPIO / Sketch Pin | Default MIDI CC | Press Value |
 | --- | ---: | ---: | ---: |
-| 1 | 4 | 69 | 0 |
-| 2 | 5 | 69 | 1 |
-| 3 | 6 | 69 | 2 |
-| 4 | 7 | 52 | 127 |
-| 5 | 8 | 53 | 127 |
-| 6 | 9 | 25 | 127 |
+| 1 | D4 / GPIO4 / `4` | 69 | 0 |
+| 2 | D5 / GPIO5 / `5` | 69 | 1 |
+| 3 | D6 / GPIO6 / `6` | 69 | 2 |
+| 4 | D7 / GPIO7 / `7` | 52 | 127 |
+| 5 | D8 / GPIO8 / `8` | 53 | 127 |
+| 6 | D9 / GPIO9 / `9` | 25 | 127 |
 
 ## Edit Buttons
 
-| Edit Control | KB2040 GPIO / Arduino Pin | Behavior |
+| Edit Control | KB2040 Board Pad / GPIO / Sketch Pin | Behavior |
 | --- | ---: | --- |
-| Previous | 10 | Previous assignable preset |
-| Next | A0 / GPIO26 | Next assignable preset |
+| Previous | D10 / GPIO10 / `10` | Previous assignable preset |
+| Next | A0 / GPIO26 / `A0` | Next assignable preset |
 
 ## Display Wiring
 
