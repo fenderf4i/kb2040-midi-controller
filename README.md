@@ -1,10 +1,14 @@
-# KB2040 USB MIDI Controller for Line 6 HX Stomp
+# KB2040 USB and DIN MIDI Controller for Line 6 HX Stomp
 
-Firmware for a six-switch USB MIDI stompbox controller for the Line 6 HX Stomp,
-built around an Adafruit KB2040. The controller sends MIDI CC messages for six
-stomp switches, shows status on a 128x64 SSD1306 OLED, and includes an onboard
-edit mode for changing each switch's HX Stomp assignment without reflashing the
-firmware.
+Firmware for a six-switch USB and DIN MIDI stompbox controller for the Line 6
+HX Stomp, built around an Adafruit KB2040. The controller sends MIDI CC
+messages for six stomp switches, shows status on a 128x64 SSD1306 OLED, and
+includes an onboard edit mode for changing each switch's HX Stomp assignment
+without reflashing the firmware.
+
+The controller supports two MIDI outputs with different intended uses. Use the
+5-pin DIN MIDI output to control the HX Stomp directly. Use USB MIDI when
+connecting the KB2040 to a USB host, such as a computer.
 
 <p align="center">
   <img src="docs/images/stompbox-build.webp" alt="Stompbox build showing home and edit mode OLED screens" width="520">
@@ -20,6 +24,7 @@ firmware.
   core by Earle F. Philhower, III
 - FQBN: `rp2040:rp2040:adafruit_kb2040:usbstack=tinyusb`
 - USB stack: Adafruit TinyUSB
+- DIN MIDI output: KB2040 `D0` / GPIO0 / UART TX at `31250` baud
 
 This is a KB2040/RP2040 project, not an Arduino-branded board. The firmware is
 written as an Arduino `.ino` sketch and built with Arduino IDE or Arduino CLI
@@ -32,10 +37,13 @@ pins used here. For example, sketch pin `4` is GPIO4 / the board pad labeled
 ## Behavior
 
 - MIDI channel: `1`
+- USB MIDI is available for USB hosts such as computers.
+- The HX Stomp does not act as a USB host for this controller, so direct HX
+  Stomp control should use the 5-pin DIN MIDI output.
 - Press debounce: `25 ms`
 - Edit mode hold: `4 seconds`
-- Pressing a stomp switch with a fixed-value assignment sends one USB MIDI
-  Control Change message.
+- Pressing a stomp switch with a fixed-value assignment sends one MIDI Control
+  Change message over both USB MIDI and DIN MIDI output.
 - The last-button display returns to the home screen after `5 seconds`.
 - Holding a stomp switch enters edit mode for that switch after the initial
   normal MIDI message.
@@ -44,6 +52,10 @@ pins used here. For example, sketch pin `4` is GPIO4 / the board pad labeled
 - The preset list includes HX Stomp expression pedal CC entries for EP1 and EP2
   as variable `0-127` values; those are preserved as analog-value entries, not
   emitted as fixed stomp-switch values.
+- Expression pedal 1 is read on `A1` and sent as MIDI `CC 1` with smoothed
+  variable values from `0-127` over both USB MIDI and DIN MIDI output.
+- Expression pedal position is shown as a persistent right-side slider on the
+  OLED instead of replacing the current screen.
 - Edited assignments are saved using the RP2040 core's flash-backed
   `EEPROM.h` emulation.
 
@@ -67,6 +79,41 @@ Wire each button between the listed KB2040 board pad and `GND`. The firmware use
 | --- | ---: | --- |
 | Previous | D10 / GPIO10 / `10` | Previous assignable preset |
 | Next | A0 / GPIO26 / `A0` | Next assignable preset |
+
+## Expression Pedal Wiring
+
+Expression pedal 1 uses a 1/4" mono TS jack for a Line 6-style passive
+expression pedal such as the Mission EP1-L6.
+
+| Jack / Part | KB2040 Connection |
+| --- | --- |
+| Sleeve | `GND` |
+| Tip | `A1` |
+| Pull-up resistor | Between `A1` and `3V` |
+
+The current test build uses a `5.1k` pull-up resistor. The sketch calibrates the
+observed analog range with `EXPRESSION_RAW_MIN` and `EXPRESSION_RAW_MAX`, clamps
+near-endpoint values to clean `0` and `127`, and uses `EXPRESSION_MIDI_DEADBAND`
+to avoid sending MIDI for one-step analog jitter. If the pedal direction is
+backwards, set `EXPRESSION_INVERT` to `true` in the sketch and reflash.
+
+## DIN MIDI Output Wiring
+
+The DIN MIDI output mirrors the USB MIDI messages and is the intended connection
+for the HX Stomp. This avoids the USB host limitation: the KB2040 presents
+itself as a USB MIDI device, and the HX Stomp's USB port does not host that
+device directly.
+
+| DIN-5 MIDI Out Jack | KB2040 Connection |
+| --- | --- |
+| Pin 4 | `3V` through a `30 ohm` or `33 ohm` resistor |
+| Pin 5 | `D0` through a `10 ohm` resistor |
+| Pin 2 | `GND` / shield |
+| Pins 1 and 3 | Not connected |
+
+Be careful with DIN jack pin numbering: front view and solder-lug view are
+mirrored. Verify pins with the connector datasheet or a continuity check before
+soldering.
 
 ## Display Wiring
 
