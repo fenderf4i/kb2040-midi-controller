@@ -20,14 +20,31 @@
 
 Adafruit_USBD_MIDI usbMidi;
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usbMidi, MIDI);
+MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, DIN_MIDI);
 
 const byte MIDI_CHANNEL_1 = 1; // Arduino MIDI library channels are encoded 1-16.
 const unsigned long DEBOUNCE_MS = 25;
 const unsigned long EDIT_HOLD_MS = 4000;
 const unsigned long BUTTON_OUTPUT_SCREEN_MS = 5000;
+const byte DIN_MIDI_TX_PIN = 0; // KB2040 D0 / GPIO0 / UART0 TX.
 const byte EDIT_PREVIOUS_PIN = 10;
 const byte EDIT_NEXT_PIN = A0;
 const unsigned long DISPLAY_MIN_UPDATE_MS = 80;
+const byte EXPRESSION_1_PIN = A1;
+const byte EXPRESSION_1_CC = 1;
+const int EXPRESSION_RAW_MIN = 0;
+const int EXPRESSION_RAW_MAX = 2048;
+const byte EXPRESSION_LOW_CLAMP = 2;
+const byte EXPRESSION_HIGH_CLAMP = 125;
+const unsigned long EXPRESSION_SEND_INTERVAL_MS = 15;
+const unsigned long EXPRESSION_DISPLAY_UPDATE_MS = 120;
+const byte EXPRESSION_MIDI_DEADBAND = 2;
+const bool EXPRESSION_INVERT = false;
+const byte DISPLAY_CONTENT_WIDTH = 114;
+const byte EXPRESSION_SLIDER_X = 118;
+const byte EXPRESSION_SLIDER_Y = 20;
+const byte EXPRESSION_SLIDER_WIDTH = 9;
+const byte EXPRESSION_SLIDER_HEIGHT = 41;
 const uint32_t I2C_TIMEOUT_MS = 3;
 const int EEPROM_SIGNATURE_ADDRESS = 0;
 const int EEPROM_BUTTON_PRESETS_ADDRESS = 1;
@@ -116,6 +133,14 @@ unsigned long lastDisplayUpdateMs = 0;
 bool pendingEditDisplayUpdate = false;
 bool showingButtonOutput = false;
 unsigned long buttonOutputShownAtMs = 0;
+byte lastButtonOutputIndex = 0;
+int expressionSmoothedRaw = 0;
+byte currentExpressionMidiValue = 0;
+byte lastExpressionMidiValue = 0;
+byte lastExpressionDisplayValue = 0;
+bool expressionInitialized = false;
+unsigned long lastExpressionSentAtMs = 0;
+unsigned long lastExpressionDisplayAtMs = 0;
 
 struct EditButton {
   byte pin;
@@ -150,6 +175,7 @@ void commitEEPROM() {
 
 void sendControlChange(byte channel, byte control, byte value) {
   MIDI.sendControlChange(control, value, channel);
+  DIN_MIDI.sendControlChange(control, value, channel);
 }
 
 bool isValidPresetIndex(byte presetIndex) {
@@ -274,13 +300,13 @@ void drawStatusFooter(byte controlChange, byte value, bool variableValue = false
   } else {
     snprintf(line, sizeof(line), "CC %u  VAL %u", controlChange, value);
   }
-  display.drawRFrame(0, 51, 128, 13, 2);
+  display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
   display.setFont(u8g2_font_6x10_tf);
   display.drawStr(4, 61, line);
 }
 
 void drawHeader(const char *text) {
-  display.drawBox(0, 0, 128, 13);
+  display.drawBox(0, 0, DISPLAY_CONTENT_WIDTH, 13);
   display.setDrawColor(0);
   display.setFont(u8g2_font_6x10_tf);
   display.drawStr(4, 10, text);
@@ -295,8 +321,27 @@ void drawButtonCell(byte x, byte y, const char *label) {
 
 void drawCenteredText(byte baselineY, const char *text) {
   const int textWidth = display.getStrWidth(text);
-  const int x = max(0, (128 - textWidth) / 2);
+  const int x = max(0, (DISPLAY_CONTENT_WIDTH - textWidth) / 2);
   display.drawStr(x, baselineY, text);
+}
+
+void drawExpressionSlider() {
+  display.drawRFrame(EXPRESSION_SLIDER_X,
+                     EXPRESSION_SLIDER_Y,
+                     EXPRESSION_SLIDER_WIDTH,
+                     EXPRESSION_SLIDER_HEIGHT,
+                     2);
+
+  const byte innerHeight = EXPRESSION_SLIDER_HEIGHT - 4;
+  const byte fillHeight = map(currentExpressionMidiValue, 0, 127, 0, innerHeight);
+  const byte fillY = EXPRESSION_SLIDER_Y + EXPRESSION_SLIDER_HEIGHT - 2 - fillHeight;
+
+  if (fillHeight > 0) {
+    display.drawBox(EXPRESSION_SLIDER_X + 2,
+                    fillY,
+                    EXPRESSION_SLIDER_WIDTH - 4,
+                    fillHeight);
+  }
 }
 
 void showReadyScreen() {
@@ -308,21 +353,22 @@ void showReadyScreen() {
   display.clearBuffer();
   display.setFont(u8g2_font_7x14B_tf);
   drawCenteredText(12, "USB MIDI Ctrl");
-  display.drawHLine(0, 16, 128);
+  display.drawHLine(0, 16, DISPLAY_CONTENT_WIDTH);
   display.setFont(u8g2_font_6x10_tf);
   drawCenteredText(28, "Button Layout");
   drawButtonCell(4, 31, "1");
-  drawButtonCell(52, 31, "2");
-  drawButtonCell(100, 31, "3");
+  drawButtonCell(45, 31, "2");
+  drawButtonCell(86, 31, "3");
   drawButtonCell(4, 45, "4");
-  drawButtonCell(52, 45, "5");
-  drawButtonCell(100, 45, "6");
+  drawButtonCell(45, 45, "5");
+  drawButtonCell(86, 45, "6");
   display.setFont(u8g2_font_4x6_tf);
   drawCenteredText(64, "MIDI Channel 1");
+  drawExpressionSlider();
   finishDisplayUpdate();
 }
 
-void showButtonOutput(byte buttonIndex) {
+void showButtonOutput(byte buttonIndex, bool resetOutputTimer = true) {
   if (!startDisplayUpdate()) {
     return;
   }
@@ -336,16 +382,20 @@ void showButtonOutput(byte buttonIndex) {
 
   display.setFont(u8g2_font_7x14B_tf);
   if (button.presetIndex == NO_PRESET_SELECTED) {
-    drawClippedText("Unlisted Preset", 0, 35, 128);
+    drawClippedText("Unlisted Preset", 0, 35, DISPLAY_CONTENT_WIDTH);
   } else {
     MidiPreset preset;
     copyPreset(button.presetIndex, preset);
-    drawClippedText(preset.function, 0, 35, 128);
+    drawClippedText(preset.function, 0, 35, DISPLAY_CONTENT_WIDTH);
   }
 
   drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
+  drawExpressionSlider();
   showingButtonOutput = true;
-  buttonOutputShownAtMs = millis();
+  lastButtonOutputIndex = buttonIndex;
+  if (resetOutputTimer) {
+    buttonOutputShownAtMs = millis();
+  }
   finishDisplayUpdate();
 }
 
@@ -365,17 +415,18 @@ void showEditModeScreen() {
     display.setFont(u8g2_font_6x10_tf);
     display.drawStr(0, 28, "Unlisted Preset");
     display.setFont(u8g2_font_7x14B_tf);
-    drawClippedText("Current button", 0, 43, 128);
+    drawClippedText("Current button", 0, 43, DISPLAY_CONTENT_WIDTH);
   } else {
     MidiPreset preset;
     copyPreset(button.presetIndex, preset);
     display.setFont(u8g2_font_6x10_tf);
-    drawClippedText(preset.section, 0, 28, 128);
+    drawClippedText(preset.section, 0, 28, DISPLAY_CONTENT_WIDTH);
     display.setFont(u8g2_font_7x14B_tf);
-    drawClippedText(preset.function, 0, 43, 128);
+    drawClippedText(preset.function, 0, 43, DISPLAY_CONTENT_WIDTH);
   }
 
   drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
+  drawExpressionSlider();
   finishDisplayUpdate();
 }
 
@@ -409,6 +460,16 @@ void exitEditMode() {
   editButtonIndex = NO_BUTTON_SELECTED;
   pendingEditDisplayUpdate = false;
   showReadyScreen();
+}
+
+void refreshCurrentScreen() {
+  if (editMode) {
+    showEditModeScreen();
+  } else if (showingButtonOutput) {
+    showButtonOutput(lastButtonOutputIndex, false);
+  } else {
+    showReadyScreen();
+  }
 }
 
 void changeEditedPreset(int delta) {
@@ -456,6 +517,63 @@ bool updateEditButton(EditButton &button, unsigned long now) {
   return false;
 }
 
+byte readExpressionMidiValue() {
+  const int rawValue = analogRead(EXPRESSION_1_PIN);
+
+  if (!expressionInitialized) {
+    expressionSmoothedRaw = rawValue;
+    expressionInitialized = true;
+  } else {
+    expressionSmoothedRaw += (rawValue - expressionSmoothedRaw) / 8;
+  }
+
+  const int calibratedRaw = constrain(expressionSmoothedRaw, EXPRESSION_RAW_MIN, EXPRESSION_RAW_MAX);
+  long mappedValue = map(calibratedRaw, EXPRESSION_RAW_MIN, EXPRESSION_RAW_MAX, 0, 127);
+  mappedValue = constrain(mappedValue, 0, 127);
+
+  if (EXPRESSION_INVERT) {
+    mappedValue = 127 - mappedValue;
+  }
+
+  if (mappedValue <= EXPRESSION_LOW_CLAMP) {
+    mappedValue = 0;
+  } else if (mappedValue >= EXPRESSION_HIGH_CLAMP) {
+    mappedValue = 127;
+  }
+
+  return static_cast<byte>(mappedValue);
+}
+
+void serviceExpressionPedal(unsigned long now) {
+  const bool wasInitialized = expressionInitialized;
+  const byte midiValue = readExpressionMidiValue();
+  currentExpressionMidiValue = midiValue;
+
+  if (!wasInitialized) {
+    lastExpressionMidiValue = midiValue;
+    lastExpressionDisplayValue = midiValue;
+    return;
+  }
+
+  const byte valueDelta = midiValue > lastExpressionMidiValue
+                              ? midiValue - lastExpressionMidiValue
+                              : lastExpressionMidiValue - midiValue;
+
+  if (valueDelta >= EXPRESSION_MIDI_DEADBAND &&
+      now - lastExpressionSentAtMs >= EXPRESSION_SEND_INTERVAL_MS) {
+    lastExpressionMidiValue = midiValue;
+    lastExpressionSentAtMs = now;
+    sendControlChange(MIDI_CHANNEL_1, EXPRESSION_1_CC, midiValue);
+  }
+
+  if (midiValue != lastExpressionDisplayValue &&
+      now - lastExpressionDisplayAtMs >= EXPRESSION_DISPLAY_UPDATE_MS) {
+    lastExpressionDisplayValue = midiValue;
+    lastExpressionDisplayAtMs = now;
+    refreshCurrentScreen();
+  }
+}
+
 void setupUSBMIDI() {
   if (!TinyUSBDevice.isInitialized()) {
     TinyUSBDevice.begin(0);
@@ -472,9 +590,16 @@ void setupUSBMIDI() {
   }
 }
 
+void setupDINMIDI() {
+  Serial1.setTX(DIN_MIDI_TX_PIN);
+  DIN_MIDI.begin(MIDI_CHANNEL_OMNI);
+}
+
 void setup() {
   setupUSBMIDI();
+  setupDINMIDI();
   pinMode(LED_BUILTIN, OUTPUT);
+  analogReadResolution(12);
 
   for (byte i = 0; i < BUTTON_COUNT; i++) {
     pinMode(buttons[i].pin, INPUT_PULLUP);
@@ -482,6 +607,10 @@ void setup() {
 
   pinMode(EDIT_PREVIOUS_PIN, INPUT_PULLUP);
   pinMode(EDIT_NEXT_PIN, INPUT_PULLUP);
+  pinMode(EXPRESSION_1_PIN, INPUT_PULLUP);
+  lastExpressionMidiValue = readExpressionMidiValue();
+  currentExpressionMidiValue = lastExpressionMidiValue;
+  lastExpressionDisplayValue = lastExpressionMidiValue;
 
   EEPROM.begin(EEPROM_SIZE);
   loadButtonPresets();
@@ -513,6 +642,7 @@ void loop() {
 
   const unsigned long now = millis();
   bool anyButtonPressed = false;
+  serviceExpressionPedal(now);
 
   if (!editMode &&
       showingButtonOutput &&
