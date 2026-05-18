@@ -34,12 +34,16 @@ pins used here. For example, sketch pin `4` is GPIO4 / the board pad labeled
 - MIDI channel: `1`
 - Press debounce: `25 ms`
 - Edit mode hold: `4 seconds`
-- Pressing a stomp switch sends one USB MIDI Control Change message.
+- Pressing a stomp switch with a fixed-value assignment sends one USB MIDI
+  Control Change message.
 - The last-button display returns to the home screen after `5 seconds`.
 - Holding a stomp switch enters edit mode for that switch after the initial
   normal MIDI message.
 - Pressing the same stomp switch while editing exits edit mode.
 - Previous/next edit buttons scroll the HX Stomp preset list.
+- The preset list includes HX Stomp expression pedal CC entries for EP1 and EP2
+  as variable `0-127` values; those are preserved as analog-value entries, not
+  emitted as fixed stomp-switch values.
 - Edited assignments are saved using the RP2040 core's flash-backed
   `EEPROM.h` emulation.
 
