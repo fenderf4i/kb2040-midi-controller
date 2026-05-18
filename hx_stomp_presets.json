@@ -9,227 +9,288 @@
   "presets": [
     {
       "sourceRow": 2,
-      "section": "Footswitch Assign",
-      "cc": "49",
-      "value": "127",
-      "function": "Emulates FS1"
+      "section": "Expression Pedal",
+      "cc": 1,
+      "value": "0-127",
+      "function": "EP1",
+      "valueMode": "variable",
+      "notes": "Analog"
     },
     {
       "sourceRow": 3,
-      "section": "Footswitch Assign",
-      "cc": "50",
-      "value": "127",
-      "function": "Emulates FS2"
+      "section": "Expression Pedal",
+      "cc": 2,
+      "value": "0-127",
+      "function": "EP2",
+      "valueMode": "variable",
+      "notes": "Analog"
     },
     {
       "sourceRow": 4,
-      "section": "Footswitch Assign",
-      "cc": "51",
-      "value": "127",
-      "function": "Emulates FS3"
+      "section": "FS Assign",
+      "cc": 49,
+      "value": 127,
+      "function": "Emulates FS1",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 5,
-      "section": "Footswitch Assign",
-      "cc": "52",
-      "value": "127",
-      "function": "Emulates FS4"
+      "section": "FS Assign",
+      "cc": 50,
+      "value": 127,
+      "function": "Emulates FS2",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 6,
-      "section": "Footswitch Assign",
-      "cc": "53",
-      "value": "127",
-      "function": "Emulates FS5"
+      "section": "FS Assign",
+      "cc": 51,
+      "value": 127,
+      "function": "Emulates FS3",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 7,
-      "section": "Looper Controls",
-      "cc": "60",
-      "value": "127",
-      "function": "Looper Record"
+      "section": "FS Assign",
+      "cc": 52,
+      "value": 127,
+      "function": "Emulates FS4",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 8,
-      "section": "Looper Controls",
-      "cc": "60",
-      "value": "63",
-      "function": "Looper Overdub"
+      "section": "FS Assign",
+      "cc": 53,
+      "value": 127,
+      "function": "Emulates FS5",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 9,
       "section": "Looper Controls",
-      "cc": "61",
-      "value": "127",
-      "function": "Looper Play"
+      "cc": 60,
+      "value": 127,
+      "function": "Looper Record",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 10,
       "section": "Looper Controls",
-      "cc": "61",
-      "value": "63",
-      "function": "Looper Stop"
+      "cc": 60,
+      "value": 63,
+      "function": "Looper Overdub",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 11,
       "section": "Looper Controls",
-      "cc": "62",
-      "value": "127",
-      "function": "Looper Play Once"
+      "cc": 61,
+      "value": 127,
+      "function": "Looper Play",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 12,
       "section": "Looper Controls",
-      "cc": "63",
-      "value": "127",
-      "function": "Looper Undo/Redo"
+      "cc": 61,
+      "value": 63,
+      "function": "Looper Stop",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 13,
       "section": "Looper Controls",
-      "cc": "65",
-      "value": "63",
-      "function": "Looper Forward"
+      "cc": 62,
+      "value": 127,
+      "function": "Looper Play Once",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 14,
       "section": "Looper Controls",
-      "cc": "65",
-      "value": "127",
-      "function": "Looper Reverse"
+      "cc": 63,
+      "value": 127,
+      "function": "Looper Undo/Redo",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 15,
       "section": "Looper Controls",
-      "cc": "66",
-      "value": "63",
-      "function": "Looper Full Speed"
+      "cc": 65,
+      "value": 63,
+      "function": "Looper Forward",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 16,
       "section": "Looper Controls",
-      "cc": "66",
-      "value": "127",
-      "function": "Looper Half Speed"
+      "cc": 65,
+      "value": 127,
+      "function": "Looper Reverse",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 17,
-      "section": "Tempo",
-      "cc": "64",
-      "value": "127",
-      "function": "Tap Tempo"
+      "section": "Looper Controls",
+      "cc": 66,
+      "value": 63,
+      "function": "Looper Full Speed",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 18,
-      "section": "Tuner",
-      "cc": "68",
-      "value": "127",
-      "function": "Tuner screen on/off"
+      "section": "Looper Controls",
+      "cc": 66,
+      "value": 127,
+      "function": "Looper Half Speed",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 19,
-      "section": "Snapshot",
-      "cc": "69",
-      "value": "0",
-      "function": "Snapshot 1"
+      "section": "Tempo",
+      "cc": 64,
+      "value": 127,
+      "function": "Tap Tempo",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 20,
-      "section": "Snapshot",
-      "cc": "69",
-      "value": "1",
-      "function": "Snapshot 2"
+      "section": "Tuner",
+      "cc": 68,
+      "value": 127,
+      "function": "Tuner on/off",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 21,
       "section": "Snapshot",
-      "cc": "69",
-      "value": "2",
-      "function": "Snapshot 3"
+      "cc": 69,
+      "value": 0,
+      "function": "Snapshot 1",
+      "valueMode": "fixed",
+      "notes": "0=Snapshot 1"
     },
     {
       "sourceRow": 22,
       "section": "Snapshot",
-      "cc": "69",
-      "value": "8",
-      "function": "Next Snapshot"
+      "cc": 69,
+      "value": 1,
+      "function": "Snapshot 2",
+      "valueMode": "fixed",
+      "notes": "1=Snapshot 2"
     },
     {
       "sourceRow": 23,
       "section": "Snapshot",
-      "cc": "69",
-      "value": "9",
-      "function": "Previous Snapshot"
+      "cc": 69,
+      "value": 2,
+      "function": "Snapshot 3",
+      "valueMode": "fixed",
+      "notes": "2=Snapshot 3"
     },
     {
       "sourceRow": 24,
-      "section": "All Bypass",
-      "cc": "70",
-      "value": "63",
-      "function": "Bypass On"
+      "section": "Snapshot",
+      "cc": 69,
+      "value": 8,
+      "function": "Next Snapshot",
+      "valueMode": "fixed",
+      "notes": "8=Next snapshot"
     },
     {
       "sourceRow": 25,
-      "section": "All Bypass",
-      "cc": "70",
-      "value": "127",
-      "function": "Bypass Off"
+      "section": "Snapshot",
+      "cc": 69,
+      "value": 9,
+      "function": "Previous Snapshot",
+      "valueMode": "fixed",
+      "notes": "9=Previous snapshot"
     },
     {
       "sourceRow": 26,
-      "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "0",
-      "function": "Stomp"
+      "section": "All Bypass",
+      "cc": 70,
+      "value": 63,
+      "function": "Bypass On",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 27,
-      "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "1",
-      "function": "Scroll"
+      "section": "All Bypass",
+      "cc": 70,
+      "value": 127,
+      "function": "Bypass Off",
+      "valueMode": "fixed"
     },
     {
       "sourceRow": 28,
       "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "2",
-      "function": "Preset"
+      "cc": 71,
+      "value": 0,
+      "function": "Stomp",
+      "valueMode": "fixed",
+      "notes": "0=Stomp"
     },
     {
       "sourceRow": 29,
       "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "3",
-      "function": "Snapshot"
+      "cc": 71,
+      "value": 1,
+      "function": "Scroll",
+      "valueMode": "fixed",
+      "notes": "1=Scroll"
     },
     {
       "sourceRow": 30,
       "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "4",
-      "function": "Next Footswitch"
+      "cc": 71,
+      "value": 2,
+      "function": "Preset",
+      "valueMode": "fixed",
+      "notes": "2=Preset"
     },
     {
       "sourceRow": 31,
       "section": "Footswitch Mode",
-      "cc": "71",
-      "value": "5",
-      "function": "Previous Footswitch"
+      "cc": 71,
+      "value": 3,
+      "function": "Snapshot",
+      "valueMode": "fixed",
+      "notes": "3=Snapshot"
     },
     {
       "sourceRow": 32,
-      "section": "Preset",
-      "cc": "72",
-      "value": "63",
-      "function": "Previous Preset"
+      "section": "Footswitch Mode",
+      "cc": 71,
+      "value": 4,
+      "function": "Next Footswitch",
+      "valueMode": "fixed",
+      "notes": "4=Next footswitch mode"
     },
     {
       "sourceRow": 33,
+      "section": "Footswitch Mode",
+      "cc": 71,
+      "value": 5,
+      "function": "Prev Footswitch",
+      "valueMode": "fixed",
+      "notes": "5=Previous footswitch mode"
+    },
+    {
+      "sourceRow": 34,
       "section": "Preset",
-      "cc": "72",
-      "value": "127",
-      "function": "Next Preset"
+      "cc": 72,
+      "value": 63,
+      "function": "Previous Preset",
+      "valueMode": "fixed"
+    },
+    {
+      "sourceRow": 35,
+      "section": "Preset",
+      "cc": 72,
+      "value": 127,
+      "function": "Next Preset",
+      "valueMode": "fixed"
     }
   ]
 }
