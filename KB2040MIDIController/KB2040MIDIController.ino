@@ -31,7 +31,8 @@ const unsigned long DISPLAY_MIN_UPDATE_MS = 80;
 const uint32_t I2C_TIMEOUT_MS = 3;
 const int EEPROM_SIGNATURE_ADDRESS = 0;
 const int EEPROM_BUTTON_PRESETS_ADDRESS = 1;
-const byte EEPROM_SIGNATURE = 0x4D;
+const byte OLD_EEPROM_SIGNATURE = 0x4D;
+const byte EEPROM_SIGNATURE = 0x4E;
 const int EEPROM_SIZE = 256;
 
 struct MidiButton {
@@ -39,6 +40,7 @@ struct MidiButton {
   byte controlChange;
   byte pressValue;
   byte presetIndex;
+  bool variableValue;
   bool stablePressed;
   bool lastReadingPressed;
   unsigned long lastChangeMs;
@@ -47,12 +49,12 @@ struct MidiButton {
 };
 
 MidiButton buttons[] = {
-  {4, 69, 0, 17, false, false, 0, 0, false},
-  {5, 69, 1, 18, false, false, 0, 0, false},
-  {6, 69, 2, 19, false, false, 0, 0, false},
-  {7, 52, 127, 3, false, false, 0, 0, false},
-  {8, 53, 127, 4, false, false, 0, 0, false},
-  {9, 25, 127, 255, false, false, 0, 0, false}
+  {4, 69, 0, 19, false, false, false, 0, 0, false},
+  {5, 69, 1, 20, false, false, false, 0, 0, false},
+  {6, 69, 2, 21, false, false, false, 0, 0, false},
+  {7, 52, 127, 5, false, false, false, 0, 0, false},
+  {8, 53, 127, 6, false, false, false, 0, 0, false},
+  {9, 25, 127, 255, false, false, false, 0, 0, false}
 };
 
 const byte BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
@@ -64,41 +66,44 @@ struct MidiPreset {
   char function[24];
   byte controlChange;
   byte value;
+  bool variableValue;
 };
 
 const MidiPreset presets[] = {
-  {"Footswitch Assign", "Emulates FS1", 49, 127},
-  {"Footswitch Assign", "Emulates FS2", 50, 127},
-  {"Footswitch Assign", "Emulates FS3", 51, 127},
-  {"Footswitch Assign", "Emulates FS4", 52, 127},
-  {"Footswitch Assign", "Emulates FS5", 53, 127},
-  {"Looper Controls", "Looper Record", 60, 127},
-  {"Looper Controls", "Looper Overdub", 60, 63},
-  {"Looper Controls", "Looper Play", 61, 127},
-  {"Looper Controls", "Looper Stop", 61, 63},
-  {"Looper Controls", "Looper Play Once", 62, 127},
-  {"Looper Controls", "Looper Undo/Redo", 63, 127},
-  {"Looper Controls", "Looper Forward", 65, 63},
-  {"Looper Controls", "Looper Reverse", 65, 127},
-  {"Looper Controls", "Looper Full Speed", 66, 63},
-  {"Looper Controls", "Looper Half Speed", 66, 127},
-  {"Tempo", "Tap Tempo", 64, 127},
-  {"Tuner", "Tuner screen on/off", 68, 127},
-  {"Snapshot", "Snapshot 1", 69, 0},
-  {"Snapshot", "Snapshot 2", 69, 1},
-  {"Snapshot", "Snapshot 3", 69, 2},
-  {"Snapshot", "Next Snapshot", 69, 8},
-  {"Snapshot", "Previous Snapshot", 69, 9},
-  {"All Bypass", "Bypass On", 70, 63},
-  {"All Bypass", "Bypass Off", 70, 127},
-  {"Footswitch Mode", "Stomp", 71, 0},
-  {"Footswitch Mode", "Scroll", 71, 1},
-  {"Footswitch Mode", "Preset", 71, 2},
-  {"Footswitch Mode", "Snapshot", 71, 3},
-  {"Footswitch Mode", "Next Footswitch", 71, 4},
-  {"Footswitch Mode", "Previous Footswitch", 71, 5},
-  {"Preset", "Previous Preset", 72, 63},
-  {"Preset", "Next Preset", 72, 127}
+  {"Expression Pedal", "EP1", 1, 0, true},
+  {"Expression Pedal", "EP2", 2, 0, true},
+  {"FS Assign", "Emulates FS1", 49, 127, false},
+  {"FS Assign", "Emulates FS2", 50, 127, false},
+  {"FS Assign", "Emulates FS3", 51, 127, false},
+  {"FS Assign", "Emulates FS4", 52, 127, false},
+  {"FS Assign", "Emulates FS5", 53, 127, false},
+  {"Looper Controls", "Looper Record", 60, 127, false},
+  {"Looper Controls", "Looper Overdub", 60, 63, false},
+  {"Looper Controls", "Looper Play", 61, 127, false},
+  {"Looper Controls", "Looper Stop", 61, 63, false},
+  {"Looper Controls", "Looper Play Once", 62, 127, false},
+  {"Looper Controls", "Looper Undo/Redo", 63, 127, false},
+  {"Looper Controls", "Looper Forward", 65, 63, false},
+  {"Looper Controls", "Looper Reverse", 65, 127, false},
+  {"Looper Controls", "Looper Full Speed", 66, 63, false},
+  {"Looper Controls", "Looper Half Speed", 66, 127, false},
+  {"Tempo", "Tap Tempo", 64, 127, false},
+  {"Tuner", "Tuner on/off", 68, 127, false},
+  {"Snapshot", "Snapshot 1", 69, 0, false},
+  {"Snapshot", "Snapshot 2", 69, 1, false},
+  {"Snapshot", "Snapshot 3", 69, 2, false},
+  {"Snapshot", "Next Snapshot", 69, 8, false},
+  {"Snapshot", "Previous Snapshot", 69, 9, false},
+  {"All Bypass", "Bypass On", 70, 63, false},
+  {"All Bypass", "Bypass Off", 70, 127, false},
+  {"Footswitch Mode", "Stomp", 71, 0, false},
+  {"Footswitch Mode", "Scroll", 71, 1, false},
+  {"Footswitch Mode", "Preset", 71, 2, false},
+  {"Footswitch Mode", "Snapshot", 71, 3, false},
+  {"Footswitch Mode", "Next Footswitch", 71, 4, false},
+  {"Footswitch Mode", "Prev Footswitch", 71, 5, false},
+  {"Preset", "Previous Preset", 72, 63, false},
+  {"Preset", "Next Preset", 72, 127, false}
 };
 
 const byte PRESET_COUNT = sizeof(presets) / sizeof(presets[0]);
@@ -167,6 +172,7 @@ void applyPresetToButton(byte buttonIndex, byte presetIndex) {
 
   buttons[buttonIndex].controlChange = preset.controlChange;
   buttons[buttonIndex].pressValue = preset.value;
+  buttons[buttonIndex].variableValue = preset.variableValue;
 }
 
 void saveButtonPreset(byte buttonIndex, bool commitChange = true) {
@@ -178,7 +184,30 @@ void saveButtonPreset(byte buttonIndex, bool commitChange = true) {
 }
 
 void loadButtonPresets() {
-  if (EEPROM.read(EEPROM_SIGNATURE_ADDRESS) != EEPROM_SIGNATURE) {
+  const byte savedSignature = EEPROM.read(EEPROM_SIGNATURE_ADDRESS);
+
+  if (savedSignature == OLD_EEPROM_SIGNATURE) {
+    EEPROM.update(EEPROM_SIGNATURE_ADDRESS, EEPROM_SIGNATURE);
+
+    for (byte i = 0; i < BUTTON_COUNT; i++) {
+      const byte savedPresetIndex = EEPROM.read(EEPROM_BUTTON_PRESETS_ADDRESS + i);
+
+      if (savedPresetIndex == NO_PRESET_SELECTED) {
+        applyPresetToButton(i, NO_PRESET_SELECTED);
+        saveButtonPreset(i, false);
+      } else if (savedPresetIndex < PRESET_COUNT - 2) {
+        applyPresetToButton(i, savedPresetIndex + 2);
+        saveButtonPreset(i, false);
+      } else {
+        saveButtonPreset(i, false);
+      }
+    }
+
+    commitEEPROM();
+    return;
+  }
+
+  if (savedSignature != EEPROM_SIGNATURE) {
     EEPROM.update(EEPROM_SIGNATURE_ADDRESS, EEPROM_SIGNATURE);
 
     for (byte i = 0; i < BUTTON_COUNT; i++) {
@@ -238,9 +267,13 @@ void drawClippedText(const char *text, byte x, byte baselineY, byte maxPixels) {
   display.drawStr(x, baselineY, buffer);
 }
 
-void drawStatusFooter(byte controlChange, byte value) {
+void drawStatusFooter(byte controlChange, byte value, bool variableValue = false) {
   char line[18];
-  snprintf(line, sizeof(line), "CC %u  VAL %u", controlChange, value);
+  if (variableValue) {
+    snprintf(line, sizeof(line), "CC %u  VAL 0-127", controlChange);
+  } else {
+    snprintf(line, sizeof(line), "CC %u  VAL %u", controlChange, value);
+  }
   display.drawRFrame(0, 51, 128, 13, 2);
   display.setFont(u8g2_font_6x10_tf);
   display.drawStr(4, 61, line);
@@ -310,7 +343,7 @@ void showButtonOutput(byte buttonIndex) {
     drawClippedText(preset.function, 0, 35, 128);
   }
 
-  drawStatusFooter(button.controlChange, button.pressValue);
+  drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
   showingButtonOutput = true;
   buttonOutputShownAtMs = millis();
   finishDisplayUpdate();
@@ -342,7 +375,7 @@ void showEditModeScreen() {
     drawClippedText(preset.function, 0, 43, 128);
   }
 
-  drawStatusFooter(button.controlChange, button.pressValue);
+  drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
   finishDisplayUpdate();
 }
 
@@ -521,7 +554,9 @@ void loop() {
             exitEditMode();
           }
         } else {
-          sendControlChange(MIDI_CHANNEL_1, button.controlChange, button.pressValue);
+          if (!button.variableValue) {
+            sendControlChange(MIDI_CHANNEL_1, button.controlChange, button.pressValue);
+          }
           showButtonOutput(i);
         }
       } else {
