@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 12,
+  "device": {
+    "name": "MIDI Controller",
+    "activePresetId": 1
+  },
+  "hardware": {
+    "buttonCount": 6,
+    "buttonPins": [9, 8, 7, 6, 5, 4],
+    "menuControls": {
+      "mode": "stemmaQtEncoder",
+      "previousButtonPin": 10,
+      "nextButtonPin": 26,
+      "encoderAPin": 27,
+      "encoderBPin": 28,
+      "encoderSwitchPin": 29,
+      "qtEncoderInterruptPin": 10
+    }
+  },
+  "settings": {
+    "holdToEditEnabled": false,
+    "buttonScreenSeconds": 5,
+    "midiOutputMode": "both"
+  },
+  "presetToggle": {
+    "enabled": false,
+    "primaryPresetId": 0,
+    "alternatePresetId": 0,
+    "switchNumber": 1
+  },
+  "deviceProfiles": [
+    {
+      "id": 1,
+      "name": "HX Stomp",
+      "midiChannel": 1,
+      "programChangeDisplayMode": "zeroBased",
+      "commands": [
+        { "id": 1, "type": "fixed", "label": "Emulates FS1", "cc": 49, "valueOn": 127, "valueOff": 0 },
+        { "id": 2, "type": "fixed", "label": "Emulates FS2", "cc": 50, "valueOn": 127, "valueOff": 0 },
+        { "id": 3, "type": "fixed", "label": "Emulates FS3", "cc": 51, "valueOn": 127, "valueOff": 0 },
+        { "id": 4, "type": "fixed", "label": "Emulates FS4", "cc": 52, "valueOn": 127, "valueOff": 0 },
+        { "id": 5, "type": "fixed", "label": "Emulates FS5", "cc": 53, "valueOn": 127, "valueOff": 0 },
+        { "id": 6, "type": "fixed", "label": "Looper Record", "cc": 60, "valueOn": 127, "valueOff": 0 },
+        { "id": 7, "type": "fixed", "label": "Looper Overdub", "cc": 60, "valueOn": 63, "valueOff": 0 },
+        { "id": 8, "type": "fixed", "label": "Looper Play", "cc": 61, "valueOn": 127, "valueOff": 0 },
+        { "id": 9, "type": "fixed", "label": "Looper Stop", "cc": 61, "valueOn": 63, "valueOff": 0 },
+        { "id": 10, "type": "fixed", "label": "Looper Play Once", "cc": 62, "valueOn": 127, "valueOff": 0 },
+        { "id": 11, "type": "fixed", "label": "Looper Undo/Redo", "cc": 63, "valueOn": 127, "valueOff": 0 },
+        { "id": 12, "type": "fixed", "label": "Looper Forward", "cc": 65, "valueOn": 63, "valueOff": 0 },
+        { "id": 13, "type": "fixed", "label": "Looper Reverse", "cc": 65, "valueOn": 127, "valueOff": 0 },
+        { "id": 14, "type": "fixed", "label": "Looper Full Speed", "cc": 66, "valueOn": 63, "valueOff": 0 },
+        { "id": 15, "type": "fixed", "label": "Looper Half Speed", "cc": 66, "valueOn": 127, "valueOff": 0 },
+        { "id": 16, "type": "fixed", "label": "Tap Tempo", "cc": 64, "valueOn": 127, "valueOff": 0 },
+        { "id": 17, "type": "fixed", "label": "Tuner On/Off", "cc": 68, "valueOn": 127, "valueOff": 0 },
+        { "id": 18, "type": "fixed", "label": "Snapshot 1", "cc": 69, "valueOn": 0, "valueOff": 0 },
+        { "id": 19, "type": "fixed", "label": "Snapshot 2", "cc": 69, "valueOn": 1, "valueOff": 0 },
+        { "id": 20, "type": "fixed", "label": "Snapshot 3", "cc": 69, "valueOn": 2, "valueOff": 0 },
+        { "id": 21, "type": "fixed", "label": "Next Snapshot", "cc": 69, "valueOn": 8, "valueOff": 0 },
+        { "id": 22, "type": "fixed", "label": "Previous Snapshot", "cc": 69, "valueOn": 9, "valueOff": 0 },
+        { "id": 23, "type": "fixed", "label": "Bypass On", "cc": 70, "valueOn": 63, "valueOff": 0 },
+        { "id": 24, "type": "fixed", "label": "Bypass Off", "cc": 70, "valueOn": 127, "valueOff": 0 },
+        { "id": 25, "type": "fixed", "label": "Footswitch Stomp", "cc": 71, "valueOn": 0, "valueOff": 0 },
+        { "id": 26, "type": "fixed", "label": "Footswitch Scroll", "cc": 71, "valueOn": 1, "valueOff": 0 },
+        { "id": 27, "type": "fixed", "label": "Footswitch Preset", "cc": 71, "valueOn": 2, "valueOff": 0 },
+        { "id": 28, "type": "fixed", "label": "Footswitch Snapshot", "cc": 71, "valueOn": 3, "valueOff": 0 },
+        { "id": 29, "type": "fixed", "label": "Next Footswitch", "cc": 71, "valueOn": 4, "valueOff": 0 },
+        { "id": 30, "type": "fixed", "label": "Previous Footswitch", "cc": 71, "valueOn": 5, "valueOff": 0 },
+        { "id": 31, "type": "fixed", "label": "Previous Preset", "cc": 72, "valueOn": 63, "valueOff": 0 },
+        { "id": 32, "type": "fixed", "label": "Next Preset", "cc": 72, "valueOn": 127, "valueOff": 0 },
+        { "id": 33, "type": "fixed", "label": "Custom CC 25", "cc": 25, "valueOn": 127, "valueOff": 0 }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "id": 1,
+      "name": "HX Stomp",
+      "buttons": [
+        { "number": 1, "pin": "D9", "deviceProfileId": 1, "commandId": 31 },
+        { "number": 2, "pin": "D8", "deviceProfileId": 1, "commandId": 32 },
+        { "number": 3, "pin": "D7", "deviceProfileId": 1, "commandId": 17 },
+        { "number": 4, "pin": "D6", "deviceProfileId": 1, "commandId": 18 },
+        { "number": 5, "pin": "D5", "deviceProfileId": 1, "commandId": 19 },
+        { "number": 6, "pin": "D4", "deviceProfileId": 1, "commandId": 20 }
+      ]
+    }
+  ]
+}

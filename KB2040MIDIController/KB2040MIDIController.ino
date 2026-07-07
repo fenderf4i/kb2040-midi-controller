@@ -1,5 +1,5 @@
 /*
-  Six Button USB MIDI CC Controller
+  KB2040 USB and DIN MIDI CC Controller
 
   Board: Adafruit KB2040 using the Philhower RP2040 Arduino core.
 
@@ -9,151 +9,253 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Adafruit_seesaw.h>
 #include <U8g2lib.h>
-#include <EEPROM.h>
-#include <Adafruit_TinyUSB.h>
+#include <MIDIUSB.h>
+#include <USB.h>
 #include <MIDI.h>
+#include <hardware/watchdog.h>
+#include <pico/bootrom.h>
+#include "DeviceConfig.h"
+#include "WebConfigServer.h"
 
-#if defined(ARDUINO_ARCH_RP2040) && !defined(USE_TINYUSB)
-#error "Select Tools > USB Stack > Adafruit TinyUSB, or compile with :usbstack=tinyusb."
+#if defined(USE_TINYUSB)
+#error "Select the Pico SDK USB stack for MIDI and web configuration support."
 #endif
 
-Adafruit_USBD_MIDI usbMidi;
-MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usbMidi, MIDI);
 MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, DIN_MIDI);
 
-const byte MIDI_CHANNEL_1 = 1; // Arduino MIDI library channels are encoded 1-16.
 const unsigned long DEBOUNCE_MS = 25;
 const unsigned long EDIT_HOLD_MS = 4000;
-const unsigned long BUTTON_OUTPUT_SCREEN_MS = 5000;
+const unsigned long PRESET_SCREEN_MS = 2000;
+const unsigned long MENU_HOLD_MS = 800;
+const unsigned long MENU_TIMEOUT_MS = 10000;
+const unsigned long MARQUEE_STEP_MS = 350;
+const unsigned long MARQUEE_START_PAUSE_MS = 2000;
 const byte DIN_MIDI_TX_PIN = 0; // KB2040 D0 / GPIO0 / UART0 TX.
-const byte EDIT_PREVIOUS_PIN = 10;
-const byte EDIT_NEXT_PIN = A0;
+const byte WEB_CONFIG_RECOVERY_PIN = 1;
+const byte DEFAULT_EDIT_PREVIOUS_PIN = 10;
+const byte DEFAULT_EDIT_NEXT_PIN = A0;
 const unsigned long DISPLAY_MIN_UPDATE_MS = 80;
-const byte EXPRESSION_1_PIN = A1;
-const byte EXPRESSION_1_CC = 1;
-const int EXPRESSION_RAW_MIN = 0;
-const int EXPRESSION_RAW_MAX = 2048;
-const byte EXPRESSION_LOW_CLAMP = 2;
-const byte EXPRESSION_HIGH_CLAMP = 125;
-const unsigned long EXPRESSION_SEND_INTERVAL_MS = 15;
-const unsigned long EXPRESSION_DISPLAY_UPDATE_MS = 120;
-const byte EXPRESSION_MIDI_DEADBAND = 2;
-const bool EXPRESSION_INVERT = false;
-const byte DISPLAY_CONTENT_WIDTH = 114;
-const byte EXPRESSION_SLIDER_X = 118;
-const byte EXPRESSION_SLIDER_Y = 20;
-const byte EXPRESSION_SLIDER_WIDTH = 9;
-const byte EXPRESSION_SLIDER_HEIGHT = 41;
-const uint32_t I2C_TIMEOUT_MS = 3;
-const int EEPROM_SIGNATURE_ADDRESS = 0;
-const int EEPROM_BUTTON_PRESETS_ADDRESS = 1;
-const byte OLD_EEPROM_SIGNATURE = 0x4D;
-const byte EEPROM_SIGNATURE = 0x4E;
-const int EEPROM_SIZE = 256;
+const byte DISPLAY_CONTENT_WIDTH = 128;
+const byte MARQUEE_GAP_CHARS = 3;
+const uint32_t I2C_TIMEOUT_MS = 20;
+const uint32_t I2C_CLOCK_HZ = 400000;
+const uint32_t WEB_CONFIG_BOOT_MAGIC = 0x57454243;
+const uint8_t STEMMA_QT_ENCODER_ADDRESS = 0x36;
+const uint8_t STEMMA_QT_ENCODER_SWITCH_PIN = 24;
 
 struct MidiButton {
   byte pin;
-  byte controlChange;
-  byte pressValue;
-  byte presetIndex;
-  bool variableValue;
+  ButtonAssignmentRef assignment;
+  bool toggleActive;
+  byte lastSentValue;
   bool stablePressed;
   bool lastReadingPressed;
   unsigned long lastChangeMs;
   unsigned long pressedAtMs;
   bool editHoldHandled;
+  bool presetToggleHandled;
 };
 
 MidiButton buttons[] = {
-  {4, 69, 0, 19, false, false, false, 0, 0, false},
-  {5, 69, 1, 20, false, false, false, 0, 0, false},
-  {6, 69, 2, 21, false, false, false, 0, 0, false},
-  {7, 52, 127, 5, false, false, false, 0, 0, false},
-  {8, 53, 127, 6, false, false, false, 0, 0, false},
-  {9, 25, 127, 255, false, false, false, 0, 0, false}
+  {4, {1, 18}, false, 0, false, false, 0, 0, false, false},
+  {5, {1, 19}, false, 0, false, false, 0, 0, false, false},
+  {6, {1, 20}, false, 0, false, false, 0, 0, false, false},
+  {7, {1, 4}, false, 0, false, false, 0, 0, false, false},
+  {8, {1, 5}, false, 0, false, false, 0, 0, false, false},
+  {9, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false},
+  {A1, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false},
+  {A2, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false}
 };
 
-const byte BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
+const byte BUTTON_STORAGE_COUNT = sizeof(buttons) / sizeof(buttons[0]);
 const byte NO_BUTTON_SELECTED = 255;
-const byte NO_PRESET_SELECTED = 255;
 
-struct MidiPreset {
-  char section[20];
-  char function[24];
-  byte controlChange;
-  byte value;
-  bool variableValue;
-};
-
-const MidiPreset presets[] = {
-  {"Expression Pedal", "EP1", 1, 0, true},
-  {"Expression Pedal", "EP2", 2, 0, true},
-  {"FS Assign", "Emulates FS1", 49, 127, false},
-  {"FS Assign", "Emulates FS2", 50, 127, false},
-  {"FS Assign", "Emulates FS3", 51, 127, false},
-  {"FS Assign", "Emulates FS4", 52, 127, false},
-  {"FS Assign", "Emulates FS5", 53, 127, false},
-  {"Looper Controls", "Looper Record", 60, 127, false},
-  {"Looper Controls", "Looper Overdub", 60, 63, false},
-  {"Looper Controls", "Looper Play", 61, 127, false},
-  {"Looper Controls", "Looper Stop", 61, 63, false},
-  {"Looper Controls", "Looper Play Once", 62, 127, false},
-  {"Looper Controls", "Looper Undo/Redo", 63, 127, false},
-  {"Looper Controls", "Looper Forward", 65, 63, false},
-  {"Looper Controls", "Looper Reverse", 65, 127, false},
-  {"Looper Controls", "Looper Full Speed", 66, 63, false},
-  {"Looper Controls", "Looper Half Speed", 66, 127, false},
-  {"Tempo", "Tap Tempo", 64, 127, false},
-  {"Tuner", "Tuner on/off", 68, 127, false},
-  {"Snapshot", "Snapshot 1", 69, 0, false},
-  {"Snapshot", "Snapshot 2", 69, 1, false},
-  {"Snapshot", "Snapshot 3", 69, 2, false},
-  {"Snapshot", "Next Snapshot", 69, 8, false},
-  {"Snapshot", "Previous Snapshot", 69, 9, false},
-  {"All Bypass", "Bypass On", 70, 63, false},
-  {"All Bypass", "Bypass Off", 70, 127, false},
-  {"Footswitch Mode", "Stomp", 71, 0, false},
-  {"Footswitch Mode", "Scroll", 71, 1, false},
-  {"Footswitch Mode", "Preset", 71, 2, false},
-  {"Footswitch Mode", "Snapshot", 71, 3, false},
-  {"Footswitch Mode", "Next Footswitch", 71, 4, false},
-  {"Footswitch Mode", "Prev Footswitch", 71, 5, false},
-  {"Preset", "Previous Preset", 72, 63, false},
-  {"Preset", "Next Preset", 72, 127, false}
-};
-
-const byte PRESET_COUNT = sizeof(presets) / sizeof(presets[0]);
+DeviceConfigStore configStore;
+DeviceConfigPayload deviceConfig{};
+WebConfigServer webConfigServer(configStore, deviceConfig);
 
 U8G2_SSD1306_128X64_NONAME_F_2ND_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 bool displayAvailable = false;
 bool editMode = false;
 byte editButtonIndex = NO_BUTTON_SELECTED;
+bool editAssignmentDirty = false;
 unsigned long lastDisplayUpdateMs = 0;
+unsigned long lastMarqueeUpdateMs = 0;
+unsigned long marqueeStartedAtMs = 0;
+uint8_t lastMenuMarqueeScreen = 255;
+int8_t lastMenuMarqueeIndex = -128;
 bool pendingEditDisplayUpdate = false;
 bool showingButtonOutput = false;
+bool showingPresetChange = false;
+bool showingDefaultsRestoreResult = false;
+bool defaultsRestoreSucceeded = false;
 unsigned long buttonOutputShownAtMs = 0;
+unsigned long presetShownAtMs = 0;
+unsigned long defaultsRestoreShownAtMs = 0;
 byte lastButtonOutputIndex = 0;
-int expressionSmoothedRaw = 0;
-byte currentExpressionMidiValue = 0;
-byte lastExpressionMidiValue = 0;
-byte lastExpressionDisplayValue = 0;
-bool expressionInitialized = false;
-unsigned long lastExpressionSentAtMs = 0;
-unsigned long lastExpressionDisplayAtMs = 0;
+bool webConfigMode = false;
 
 struct EditButton {
   byte pin;
   bool stablePressed;
   bool lastReadingPressed;
   unsigned long lastChangeMs;
+  unsigned long pressedAtMs;
+  bool holdHandled;
 };
 
-EditButton editPreviousButton = {EDIT_PREVIOUS_PIN, false, false, 0};
-EditButton editNextButton = {EDIT_NEXT_PIN, false, false, 0};
+EditButton editPreviousButton = {DEFAULT_EDIT_PREVIOUS_PIN, false, false, 0, 0, false};
+EditButton editNextButton = {DEFAULT_EDIT_NEXT_PIN, false, false, 0, 0, false};
 
-void copyPreset(byte presetIndex, MidiPreset &preset) {
-  preset = presets[presetIndex];
+struct EncoderControl {
+  byte pinA;
+  byte pinB;
+  byte switchPin;
+  uint8_t lastState;
+  int8_t accumulator;
+  bool stableSwitchPressed;
+  bool lastSwitchReadingPressed;
+  unsigned long switchLastChangeMs;
+  unsigned long switchPressedAtMs;
+  bool switchHoldHandled;
+};
+
+EncoderControl encoderControl = {A1, A2, A3, 0, 0, false, false, 0, 0, false};
+
+struct StemmaQtEncoderControl {
+  byte interruptPin;
+  bool available;
+  bool stableSwitchPressed;
+  bool lastSwitchReadingPressed;
+  unsigned long switchLastChangeMs;
+  unsigned long switchPressedAtMs;
+  bool switchHoldHandled;
+};
+
+Adafruit_seesaw qtEncoder;
+StemmaQtEncoderControl qtEncoderControl = {10, false, false, false, 0, 0, false};
+
+enum class MenuScreen : uint8_t {
+  Main,
+  Presets,
+  Switches,
+  Assignments,
+  MidiOutput,
+  HomeDelay,
+  HoldEdit,
+  System,
+  ConfirmResetState,
+  ConfirmWebConfig,
+  ConfirmBootloader,
+  ConfirmRestoreDefaults
+};
+
+bool menuMode = false;
+MenuScreen menuScreen = MenuScreen::Main;
+int8_t menuIndex = 0;
+byte menuSwitchIndex = 0;
+unsigned long lastMenuInputMs = 0;
+
+const uint8_t HOME_DELAY_OPTIONS[] = {1, 3, 5, 10, 15, 30};
+const uint8_t HOME_DELAY_OPTION_COUNT = sizeof(HOME_DELAY_OPTIONS) / sizeof(HOME_DELAY_OPTIONS[0]);
+
+const char *assignmentTypeLabel(AssignmentType type) {
+  switch (type) {
+    case AssignmentType::Toggle:
+      return "Toggle";
+    case AssignmentType::Momentary:
+      return "Momentary";
+    case AssignmentType::Fixed:
+    default:
+      return "Fixed Value";
+  }
+}
+
+const char *messageTypeLabel(MidiMessageType type) {
+  return type == MidiMessageType::ProgramChange ? "Program Change" : "Control Change";
+}
+
+uint16_t displayNumberForAssignment(const DeviceProfileConfig &profile,
+                                    const AssignmentConfig &assignment) {
+  if (assignment.messageType == MidiMessageType::ProgramChange &&
+      profile.programChangeDisplayMode == ProgramChangeDisplayMode::OneBased) {
+    return static_cast<uint16_t>(assignment.controlChange) + 1;
+  }
+  return assignment.controlChange;
+}
+
+PedalPresetConfig &activePreset() {
+  return *DeviceConfigStore::activePreset(deviceConfig);
+}
+
+const PedalPresetConfig &activePresetConst() {
+  return *DeviceConfigStore::activePreset(deviceConfig);
+}
+
+bool assignmentRefsMatch(const ButtonAssignmentRef &left, const ButtonAssignmentRef &right) {
+  return left.profileId == right.profileId && left.assignmentId == right.assignmentId;
+}
+
+bool assignmentRefIsAssigned(const ButtonAssignmentRef &reference) {
+  return reference.profileId != UNASSIGNED_ID && reference.assignmentId != UNASSIGNED_ID;
+}
+
+const AssignmentConfig *assignmentForButton(byte buttonIndex,
+                                            const DeviceProfileConfig **profile = nullptr) {
+  if (buttonIndex >= deviceConfig.hardware.buttonCount) return nullptr;
+  return DeviceConfigStore::findAssignment(deviceConfig, buttons[buttonIndex].assignment, profile);
+}
+
+void applyHardwareConfiguration() {
+  byte count = deviceConfig.hardware.buttonCount;
+  if (count == 0 || count > MAX_STOMP_SWITCH_COUNT) count = DEFAULT_BUTTON_COUNT;
+  deviceConfig.hardware.buttonCount = count;
+
+  for (byte i = 0; i < BUTTON_STORAGE_COUNT; ++i) {
+    buttons[i].pin = deviceConfig.hardware.buttonPins[i];
+    buttons[i].assignment = {UNASSIGNED_ID, UNASSIGNED_ID};
+    buttons[i].toggleActive = false;
+    buttons[i].stablePressed = false;
+    buttons[i].lastReadingPressed = false;
+    buttons[i].lastChangeMs = 0;
+    buttons[i].pressedAtMs = 0;
+    buttons[i].editHoldHandled = false;
+    buttons[i].presetToggleHandled = false;
+  }
+
+  editPreviousButton.pin = deviceConfig.hardware.previousButtonPin;
+  editPreviousButton.stablePressed = false;
+  editPreviousButton.lastReadingPressed = false;
+  editPreviousButton.lastChangeMs = 0;
+  editPreviousButton.pressedAtMs = 0;
+  editPreviousButton.holdHandled = false;
+  editNextButton.pin = deviceConfig.hardware.nextButtonPin;
+  editNextButton.stablePressed = false;
+  editNextButton.lastReadingPressed = false;
+  editNextButton.lastChangeMs = 0;
+  editNextButton.pressedAtMs = 0;
+  editNextButton.holdHandled = false;
+
+  encoderControl.pinA = deviceConfig.hardware.encoderAPin;
+  encoderControl.pinB = deviceConfig.hardware.encoderBPin;
+  encoderControl.switchPin = deviceConfig.hardware.encoderSwitchPin;
+  encoderControl.lastState = 0;
+  encoderControl.accumulator = 0;
+  encoderControl.stableSwitchPressed = false;
+  encoderControl.lastSwitchReadingPressed = false;
+  encoderControl.switchLastChangeMs = 0;
+  encoderControl.switchPressedAtMs = 0;
+  encoderControl.switchHoldHandled = false;
+
+  qtEncoderControl.interruptPin = deviceConfig.hardware.qtEncoderInterruptPin;
+  qtEncoderControl.available = false;
+  qtEncoderControl.stableSwitchPressed = false;
+  qtEncoderControl.lastSwitchReadingPressed = false;
+  qtEncoderControl.switchLastChangeMs = 0;
+  qtEncoderControl.switchPressedAtMs = 0;
+  qtEncoderControl.switchHoldHandled = false;
 }
 
 void configureI2CTimeout() {
@@ -169,97 +271,159 @@ bool getI2CTimeoutFlag() {
   return Wire1.getTimeoutFlag();
 }
 
-void commitEEPROM() {
-  EEPROM.commit();
-}
-
 void sendControlChange(byte channel, byte control, byte value) {
-  MIDI.sendControlChange(control, value, channel);
-  DIN_MIDI.sendControlChange(control, value, channel);
-}
-
-bool isValidPresetIndex(byte presetIndex) {
-  return presetIndex == NO_PRESET_SELECTED || presetIndex < PRESET_COUNT;
-}
-
-void applyPresetToButton(byte buttonIndex, byte presetIndex) {
-  if (!isValidPresetIndex(presetIndex)) {
-    return;
+  const midiEventPacket_t packet = {
+    0x0B,
+    static_cast<uint8_t>(0xB0 | ((channel - 1) & 0x0F)),
+    control,
+    value
+  };
+  if (deviceConfig.settings.midiOutputMode != MidiOutputMode::DinOnly) {
+    MidiUSB.sendMIDI(packet);
+    MidiUSB.flush();
   }
-
-  buttons[buttonIndex].presetIndex = presetIndex;
-
-  if (presetIndex == NO_PRESET_SELECTED) {
-    return;
-  }
-
-  MidiPreset preset;
-  copyPreset(presetIndex, preset);
-
-  buttons[buttonIndex].controlChange = preset.controlChange;
-  buttons[buttonIndex].pressValue = preset.value;
-  buttons[buttonIndex].variableValue = preset.variableValue;
-}
-
-void saveButtonPreset(byte buttonIndex, bool commitChange = true) {
-  EEPROM.update(EEPROM_BUTTON_PRESETS_ADDRESS + buttonIndex, buttons[buttonIndex].presetIndex);
-
-  if (commitChange) {
-    commitEEPROM();
+  if (deviceConfig.settings.midiOutputMode != MidiOutputMode::UsbOnly) {
+    DIN_MIDI.sendControlChange(control, value, channel);
   }
 }
 
-void loadButtonPresets() {
-  const byte savedSignature = EEPROM.read(EEPROM_SIGNATURE_ADDRESS);
+void sendProgramChange(byte channel, byte program) {
+  const midiEventPacket_t packet = {
+    0x0C,
+    static_cast<uint8_t>(0xC0 | ((channel - 1) & 0x0F)),
+    program,
+    0
+  };
+  if (deviceConfig.settings.midiOutputMode != MidiOutputMode::DinOnly) {
+    MidiUSB.sendMIDI(packet);
+    MidiUSB.flush();
+  }
+  if (deviceConfig.settings.midiOutputMode != MidiOutputMode::UsbOnly) {
+    DIN_MIDI.sendProgramChange(program, channel);
+  }
+}
 
-  if (savedSignature == OLD_EEPROM_SIGNATURE) {
-    EEPROM.update(EEPROM_SIGNATURE_ADDRESS, EEPROM_SIGNATURE);
+const char *midiOutputModeLabel(MidiOutputMode mode) {
+  switch (mode) {
+    case MidiOutputMode::UsbOnly:
+      return "USB only";
+    case MidiOutputMode::DinOnly:
+      return "DIN only";
+    case MidiOutputMode::UsbAndDin:
+    default:
+      return "USB + DIN";
+  }
+}
 
-    for (byte i = 0; i < BUTTON_COUNT; i++) {
-      const byte savedPresetIndex = EEPROM.read(EEPROM_BUTTON_PRESETS_ADDRESS + i);
+MidiOutputMode midiOutputModeForOption(int option) {
+  switch (option) {
+    case 1:
+      return MidiOutputMode::DinOnly;
+    case 2:
+      return MidiOutputMode::UsbOnly;
+    case 0:
+    default:
+      return MidiOutputMode::UsbAndDin;
+  }
+}
 
-      if (savedPresetIndex == NO_PRESET_SELECTED) {
-        applyPresetToButton(i, NO_PRESET_SELECTED);
-        saveButtonPreset(i, false);
-      } else if (savedPresetIndex < PRESET_COUNT - 2) {
-        applyPresetToButton(i, savedPresetIndex + 2);
-        saveButtonPreset(i, false);
-      } else {
-        saveButtonPreset(i, false);
-      }
-    }
+int optionForMidiOutputMode(MidiOutputMode mode) {
+  switch (mode) {
+    case MidiOutputMode::DinOnly:
+      return 1;
+    case MidiOutputMode::UsbOnly:
+      return 2;
+    case MidiOutputMode::UsbAndDin:
+    default:
+      return 0;
+  }
+}
 
-    commitEEPROM();
+int optionForHomeDelay(uint8_t seconds) {
+  for (uint8_t i = 0; i < HOME_DELAY_OPTION_COUNT; ++i) {
+    if (HOME_DELAY_OPTIONS[i] == seconds) return i;
+  }
+  return 2;
+}
+
+void applyAssignmentToButton(byte buttonIndex, ButtonAssignmentRef assignment) {
+  if (buttonIndex >= deviceConfig.hardware.buttonCount) return;
+  PedalPresetConfig &preset = activePreset();
+  if (assignmentRefIsAssigned(assignment) &&
+      DeviceConfigStore::findAssignment(deviceConfig, assignment, nullptr) == nullptr) {
+    assignment = {UNASSIGNED_ID, UNASSIGNED_ID};
+  }
+  buttons[buttonIndex].assignment = assignment;
+  buttons[buttonIndex].toggleActive = false;
+  const AssignmentConfig *resolved = DeviceConfigStore::findAssignment(deviceConfig, assignment, nullptr);
+  buttons[buttonIndex].lastSentValue = resolved != nullptr
+                                           ? (resolved->messageType == MidiMessageType::ProgramChange
+                                                  ? resolved->controlChange
+                                                  : resolved->type == AssignmentType::Toggle
+                                                  ? resolved->valueOff
+                                                  : resolved->valueOn)
+                                           : 0;
+  preset.buttonAssignments[buttonIndex] = assignment;
+}
+
+void saveButtonAssignment(byte buttonIndex) {
+  if (buttonIndex >= deviceConfig.hardware.buttonCount) return;
+  activePreset().buttonAssignments[buttonIndex] = buttons[buttonIndex].assignment;
+  configStore.save(deviceConfig);
+}
+
+void applyActivePreset() {
+  PedalPresetConfig &preset = activePreset();
+  for (byte i = 0; i < deviceConfig.hardware.buttonCount; ++i) {
+    applyAssignmentToButton(i, preset.buttonAssignments[i]);
+  }
+}
+
+bool setActivePresetId(uint16_t presetId, bool saveConfig) {
+  if (DeviceConfigStore::findPreset(deviceConfig, presetId) == nullptr) return false;
+  deviceConfig.activePresetId = presetId;
+  applyActivePreset();
+  if (saveConfig) configStore.save(deviceConfig);
+  return true;
+}
+
+void loadDeviceConfiguration() {
+  configStore.begin();
+  configStore.load(deviceConfig);
+  applyHardwareConfiguration();
+  applyActivePreset();
+}
+
+void sendButtonPress(byte buttonIndex) {
+  MidiButton &button = buttons[buttonIndex];
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
+  if (assignment == nullptr) return;
+
+  if (assignment->messageType == MidiMessageType::ProgramChange) {
+    button.lastSentValue = assignment->controlChange;
+    sendProgramChange(profile->midiChannel, assignment->controlChange);
     return;
   }
 
-  if (savedSignature != EEPROM_SIGNATURE) {
-    EEPROM.update(EEPROM_SIGNATURE_ADDRESS, EEPROM_SIGNATURE);
-
-    for (byte i = 0; i < BUTTON_COUNT; i++) {
-      saveButtonPreset(i, false);
-    }
-
-    commitEEPROM();
-    return;
+  byte value = assignment->valueOn;
+  if (assignment->type == AssignmentType::Toggle) {
+    button.toggleActive = !button.toggleActive;
+    value = button.toggleActive ? assignment->valueOn : assignment->valueOff;
   }
+  button.lastSentValue = value;
+  sendControlChange(profile->midiChannel, assignment->controlChange, value);
+}
 
-  bool repairedSavedPreset = false;
-
-  for (byte i = 0; i < BUTTON_COUNT; i++) {
-    const byte savedPresetIndex = EEPROM.read(EEPROM_BUTTON_PRESETS_ADDRESS + i);
-
-    if (isValidPresetIndex(savedPresetIndex)) {
-      applyPresetToButton(i, savedPresetIndex);
-    } else {
-      saveButtonPreset(i, false);
-      repairedSavedPreset = true;
-    }
-  }
-
-  if (repairedSavedPreset) {
-    commitEEPROM();
-  }
+void sendButtonRelease(byte buttonIndex) {
+  MidiButton &button = buttons[buttonIndex];
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
+  if (assignment == nullptr ||
+      assignment->messageType != MidiMessageType::ControlChange ||
+      assignment->type != AssignmentType::Momentary) return;
+  button.lastSentValue = assignment->valueOff;
+  sendControlChange(profile->midiChannel, assignment->controlChange, assignment->valueOff);
 }
 
 bool startDisplayUpdate() {
@@ -293,12 +457,58 @@ void drawClippedText(const char *text, byte x, byte baselineY, byte maxPixels) {
   display.drawStr(x, baselineY, buffer);
 }
 
-void drawStatusFooter(byte controlChange, byte value, bool variableValue = false) {
-  char line[18];
-  if (variableValue) {
-    snprintf(line, sizeof(line), "CC %u  VAL 0-127", controlChange);
+void drawScrollingText(const char *text, byte x, byte baselineY, byte maxPixels) {
+  if (text == nullptr || text[0] == '\0') return;
+  if (display.getStrWidth(text) <= maxPixels) {
+    display.drawStr(x, baselineY, text);
+    return;
+  }
+
+  const size_t textLength = strlen(text);
+  const size_t cycleLength = textLength + MARQUEE_GAP_CHARS;
+  const unsigned long elapsedMs = millis() - marqueeStartedAtMs;
+  const size_t start = elapsedMs < MARQUEE_START_PAUSE_MS
+                           ? 0
+                           : ((elapsedMs - MARQUEE_START_PAUSE_MS) / MARQUEE_STEP_MS) % cycleLength;
+  char buffer[48] = "";
+  size_t outputLength = 0;
+
+  while (outputLength < sizeof(buffer) - 1) {
+    const size_t sourceIndex = (start + outputLength) % cycleLength;
+    buffer[outputLength] = sourceIndex < textLength ? text[sourceIndex] : ' ';
+    buffer[outputLength + 1] = '\0';
+    if (display.getStrWidth(buffer) > maxPixels) {
+      buffer[outputLength] = '\0';
+      break;
+    }
+    ++outputLength;
+  }
+
+  display.drawStr(x, baselineY, buffer);
+}
+
+void resetMarqueePhase() {
+  marqueeStartedAtMs = millis();
+  lastMarqueeUpdateMs = marqueeStartedAtMs;
+}
+
+void resetMenuMarqueeTracking() {
+  lastMenuMarqueeScreen = 255;
+  lastMenuMarqueeIndex = -128;
+}
+
+void drawStatusFooter(MidiMessageType messageType,
+                      byte midiChannel,
+                      uint16_t number,
+                      byte value,
+                      bool variableValue = false) {
+  char line[20];
+  if (messageType == MidiMessageType::ProgramChange) {
+    snprintf(line, sizeof(line), "CH%u PC%u", midiChannel, number);
+  } else if (variableValue) {
+    snprintf(line, sizeof(line), "CH%u CC%u 0-127", midiChannel, number);
   } else {
-    snprintf(line, sizeof(line), "CC %u  VAL %u", controlChange, value);
+    snprintf(line, sizeof(line), "CH%u CC%u VAL%u", midiChannel, number, value);
   }
   display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
   display.setFont(u8g2_font_6x10_tf);
@@ -309,14 +519,99 @@ void drawHeader(const char *text) {
   display.drawBox(0, 0, DISPLAY_CONTENT_WIDTH, 13);
   display.setDrawColor(0);
   display.setFont(u8g2_font_6x10_tf);
-  display.drawStr(4, 10, text);
+  drawScrollingText(text, 4, 10, DISPLAY_CONTENT_WIDTH - 8);
   display.setDrawColor(1);
 }
 
-void drawButtonCell(byte x, byte y, const char *label) {
-  display.drawRFrame(x, y, 24, 13, 3);
-  display.setFont(u8g2_font_6x10_tf);
-  display.drawStr(x + 9, y + 10, label);
+void drawMenuPositionIndicator(int selectedIndex, int itemCount) {
+  if (itemCount <= 1) return;
+  constexpr byte trackX = DISPLAY_CONTENT_WIDTH - 2;
+  constexpr byte trackY = 16;
+  constexpr byte trackHeight = 45;
+  byte thumbHeight = trackHeight / itemCount;
+  if (thumbHeight < 5) thumbHeight = 5;
+  const int travel = trackHeight - thumbHeight;
+  const byte thumbY = trackY + ((travel * selectedIndex) / (itemCount - 1));
+
+  for (byte y = trackY; y < trackY + trackHeight; y += 4) {
+    display.drawPixel(trackX + 1, y);
+  }
+  display.drawBox(trackX, thumbY, 2, thumbHeight);
+}
+
+void drawButtonCell(byte x, byte y, byte width, byte height, const char *label) {
+  display.drawRFrame(x, y, width, height, 4);
+  display.setFont(height >= 30 ? u8g2_font_logisoso16_tf : u8g2_font_7x14B_tf);
+  const int textWidth = display.getStrWidth(label);
+  const int ascent = display.getAscent();
+  const int descent = display.getDescent();
+  const int textHeight = ascent - descent;
+  const int textX = x + max(0, (static_cast<int>(width) - textWidth) / 2);
+  const int baselineY = y + max(0, (static_cast<int>(height) - textHeight) / 2) + ascent;
+  display.drawStr(textX, baselineY, label);
+}
+
+const PedalPresetConfig *presetToggleTargetPreset() {
+  if (!deviceConfig.presetToggle.enabled) return nullptr;
+  const uint16_t activeId = deviceConfig.activePresetId;
+  const uint16_t targetId = activeId == deviceConfig.presetToggle.primaryPresetId
+                                ? deviceConfig.presetToggle.alternatePresetId
+                                : activeId == deviceConfig.presetToggle.alternatePresetId
+                                ? deviceConfig.presetToggle.primaryPresetId
+                                : UNASSIGNED_ID;
+  return targetId == UNASSIGNED_ID ? nullptr : DeviceConfigStore::findPreset(deviceConfig, targetId);
+}
+
+bool presetToggleAppliesToButton(byte buttonIndex) {
+  return deviceConfig.presetToggle.enabled &&
+         deviceConfig.presetToggle.switchNumber == buttonIndex + 1 &&
+         presetToggleTargetPreset() != nullptr;
+}
+
+void formatHomeButtonLabel(byte buttonIndex, char *output, size_t outputSize) {
+  if (outputSize == 0) return;
+  const PedalPresetConfig *targetPreset = presetToggleAppliesToButton(buttonIndex)
+                                             ? presetToggleTargetPreset()
+                                             : nullptr;
+  if (targetPreset != nullptr) {
+    snprintf(output, outputSize, "Page %s", targetPreset->name);
+    output[outputSize - 1] = '\0';
+    return;
+  }
+
+  const AssignmentConfig *assignment = assignmentForButton(buttonIndex, nullptr);
+  if (assignment == nullptr) {
+    strncpy(output, "Unassigned", outputSize);
+  } else {
+    strncpy(output, assignment->label, outputSize);
+  }
+  output[outputSize - 1] = '\0';
+}
+
+void drawButtonAssignmentMap() {
+  const byte count = deviceConfig.hardware.buttonCount;
+  if (count == 0) return;
+
+  const byte columns = 1;
+  const byte rows = count;
+  const byte areaY = 16;
+  const byte cellWidth = DISPLAY_CONTENT_WIDTH / columns;
+  const byte rowHeight = (64 - areaY) / rows;
+  char number[4];
+  char label[DEVICE_NAME_LENGTH + 6];
+
+  display.setFont(u8g2_font_5x8_tf);
+  for (byte i = 0; i < count; ++i) {
+    const byte column = 0;
+    const byte row = i;
+    const byte x = column * cellWidth + 1;
+    const byte textOffset = rowHeight > 9 ? 8 : rowHeight - 1;
+    const byte baselineY = areaY + row * rowHeight + textOffset;
+    formatHomeButtonLabel(i, label, sizeof(label));
+    snprintf(number, sizeof(number), "%u", i + 1);
+    display.drawStr(x, baselineY, number);
+    drawScrollingText(label, x + 9, baselineY, cellWidth - 12);
+  }
 }
 
 void drawCenteredText(byte baselineY, const char *text) {
@@ -325,22 +620,22 @@ void drawCenteredText(byte baselineY, const char *text) {
   display.drawStr(x, baselineY, text);
 }
 
-void drawExpressionSlider() {
-  display.drawRFrame(EXPRESSION_SLIDER_X,
-                     EXPRESSION_SLIDER_Y,
-                     EXPRESSION_SLIDER_WIDTH,
-                     EXPRESSION_SLIDER_HEIGHT,
-                     2);
+void drawCenteredClippedText(byte baselineY, const char *text) {
+  char buffer[DEVICE_NAME_LENGTH];
+  strncpy(buffer, text, sizeof(buffer) - 1);
+  buffer[sizeof(buffer) - 1] = '\0';
+  while (strlen(buffer) > 0 && display.getStrWidth(buffer) > DISPLAY_CONTENT_WIDTH) {
+    buffer[strlen(buffer) - 1] = '\0';
+  }
+  drawCenteredText(baselineY, buffer);
+}
 
-  const byte innerHeight = EXPRESSION_SLIDER_HEIGHT - 4;
-  const byte fillHeight = map(currentExpressionMidiValue, 0, 127, 0, innerHeight);
-  const byte fillY = EXPRESSION_SLIDER_Y + EXPRESSION_SLIDER_HEIGHT - 2 - fillHeight;
-
-  if (fillHeight > 0) {
-    display.drawBox(EXPRESSION_SLIDER_X + 2,
-                    fillY,
-                    EXPRESSION_SLIDER_WIDTH - 4,
-                    fillHeight);
+void drawCenteredScrollingText(byte baselineY, const char *text) {
+  if (text == nullptr) return;
+  if (display.getStrWidth(text) <= DISPLAY_CONTENT_WIDTH) {
+    drawCenteredText(baselineY, text);
+  } else {
+    drawScrollingText(text, 0, baselineY, DISPLAY_CONTENT_WIDTH);
   }
 }
 
@@ -350,21 +645,112 @@ void showReadyScreen() {
   }
 
   showingButtonOutput = false;
+  showingPresetChange = false;
+  showingDefaultsRestoreResult = false;
   display.clearBuffer();
   display.setFont(u8g2_font_7x14B_tf);
-  drawCenteredText(12, "USB MIDI Ctrl");
-  display.drawHLine(0, 16, DISPLAY_CONTENT_WIDTH);
+  drawCenteredScrollingText(12, activePresetConst().name);
+  drawButtonAssignmentMap();
+  finishDisplayUpdate();
+}
+
+void showPresetChangeScreen() {
+  if (!startDisplayUpdate()) return;
+  showingDefaultsRestoreResult = false;
+  display.clearBuffer();
+  drawHeader("PRESET");
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredClippedText(37, activePresetConst().name);
   display.setFont(u8g2_font_6x10_tf);
-  drawCenteredText(28, "Button Layout");
-  drawButtonCell(4, 31, "1");
-  drawButtonCell(45, 31, "2");
-  drawButtonCell(86, 31, "3");
-  drawButtonCell(4, 45, "4");
-  drawButtonCell(45, 45, "5");
-  drawButtonCell(86, 45, "6");
+  char line[18];
+  uint8_t activeIndex = 0;
+  for (uint8_t i = 0; i < deviceConfig.presetCount; ++i) {
+    if (deviceConfig.presets[i].id == deviceConfig.activePresetId) activeIndex = i;
+  }
+  snprintf(line, sizeof(line), "%u of %u", activeIndex + 1, deviceConfig.presetCount);
+  drawCenteredText(54, line);
+  showingButtonOutput = false;
+  showingPresetChange = true;
+  presetShownAtMs = millis();
+  finishDisplayUpdate();
+}
+
+bool handlePresetTogglePress(byte buttonIndex) {
+  if (!presetToggleAppliesToButton(buttonIndex)) return false;
+  const PedalPresetConfig *targetPreset = presetToggleTargetPreset();
+  if (targetPreset == nullptr) return false;
+  if (!setActivePresetId(targetPreset->id, false)) return false;
+  showReadyScreen();
+  return true;
+}
+
+void showPresetStateResetScreen() {
+  if (!startDisplayUpdate()) return;
+  showingDefaultsRestoreResult = false;
+  display.clearBuffer();
+  drawHeader("RESET");
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredClippedText(35, activePresetConst().name);
+  display.setFont(u8g2_font_6x10_tf);
+  drawCenteredText(54, "State cleared");
+  showingButtonOutput = false;
+  showingPresetChange = true;
+  presetShownAtMs = millis();
+  finishDisplayUpdate();
+}
+
+void drawDefaultsRestoreResultScreen(bool saved) {
+  display.clearBuffer();
+  drawHeader("DEFAULTS");
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredText(35, saved ? "Restored" : "Save failed");
+  display.setFont(u8g2_font_6x10_tf);
+  drawCenteredText(54, saved ? "Returning home" : "Try web config");
+}
+
+void showDefaultsRestoredScreen() {
+  if (!startDisplayUpdate()) return;
+  drawDefaultsRestoreResultScreen(true);
+  showingButtonOutput = false;
+  showingPresetChange = false;
+  showingDefaultsRestoreResult = true;
+  defaultsRestoreSucceeded = true;
+  defaultsRestoreShownAtMs = millis();
+  finishDisplayUpdate();
+}
+
+void showDefaultsRestoreFailedScreen() {
+  if (!startDisplayUpdate()) return;
+  drawDefaultsRestoreResultScreen(false);
+  showingButtonOutput = false;
+  showingPresetChange = false;
+  showingDefaultsRestoreResult = true;
+  defaultsRestoreSucceeded = false;
+  defaultsRestoreShownAtMs = millis();
+  finishDisplayUpdate();
+}
+
+void showWebConfigScreen() {
+  if (!startDisplayUpdate()) return;
+  display.clearBuffer();
+  drawHeader("WEB CONFIG");
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredText(34, "192.168.7.1");
+  display.setFont(u8g2_font_6x10_tf);
+  drawCenteredText(49, webConfigServer.isRunning() ? "USB connected" : "Network error");
   display.setFont(u8g2_font_4x6_tf);
-  drawCenteredText(64, "MIDI Channel 1");
-  drawExpressionSlider();
+  drawCenteredText(62, "Configuration mode");
+  finishDisplayUpdate();
+}
+
+void showWebConfigStartingScreen() {
+  if (!startDisplayUpdate()) return;
+  display.clearBuffer();
+  drawHeader("WEB CONFIG");
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredText(36, "Starting...");
+  display.setFont(u8g2_font_6x10_tf);
+  drawCenteredText(54, "USB network");
   finishDisplayUpdate();
 }
 
@@ -373,24 +759,30 @@ void showButtonOutput(byte buttonIndex, bool resetOutputTimer = true) {
     return;
   }
 
+  showingDefaultsRestoreResult = false;
   display.clearBuffer();
   char line[20];
   MidiButton &button = buttons[buttonIndex];
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
 
   snprintf(line, sizeof(line), "Last button B%u", buttonIndex + 1);
   drawHeader(line);
 
   display.setFont(u8g2_font_7x14B_tf);
-  if (button.presetIndex == NO_PRESET_SELECTED) {
-    drawClippedText("Unlisted Preset", 0, 35, DISPLAY_CONTENT_WIDTH);
+  if (assignment == nullptr) {
+    drawClippedText("Unassigned", 0, 35, DISPLAY_CONTENT_WIDTH);
+    display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
+    display.setFont(u8g2_font_6x10_tf);
+    display.drawStr(4, 61, "No MIDI message");
   } else {
-    MidiPreset preset;
-    copyPreset(button.presetIndex, preset);
-    drawClippedText(preset.function, 0, 35, DISPLAY_CONTENT_WIDTH);
+    drawClippedText(assignment->label, 0, 35, DISPLAY_CONTENT_WIDTH);
+    drawStatusFooter(assignment->messageType,
+                     profile->midiChannel,
+                     displayNumberForAssignment(*profile, *assignment),
+                     button.lastSentValue);
   }
 
-  drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
-  drawExpressionSlider();
   showingButtonOutput = true;
   lastButtonOutputIndex = buttonIndex;
   if (resetOutputTimer) {
@@ -405,28 +797,36 @@ void showEditModeScreen() {
   }
 
   MidiButton &button = buttons[editButtonIndex];
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = assignmentForButton(editButtonIndex, &profile);
   char line[20];
 
   display.clearBuffer();
   snprintf(line, sizeof(line), "EDIT B%u", editButtonIndex + 1);
   drawHeader(line);
 
-  if (button.presetIndex == NO_PRESET_SELECTED) {
+  if (assignment == nullptr) {
     display.setFont(u8g2_font_6x10_tf);
-    display.drawStr(0, 28, "Unlisted Preset");
+    display.drawStr(0, 28, "Unassigned");
     display.setFont(u8g2_font_7x14B_tf);
-    drawClippedText("Current button", 0, 43, DISPLAY_CONTENT_WIDTH);
+    drawClippedText("No MIDI message", 0, 43, DISPLAY_CONTENT_WIDTH);
+    display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
   } else {
-    MidiPreset preset;
-    copyPreset(button.presetIndex, preset);
     display.setFont(u8g2_font_6x10_tf);
-    drawClippedText(preset.section, 0, 28, DISPLAY_CONTENT_WIDTH);
+    drawClippedText(assignment->messageType == MidiMessageType::ProgramChange
+                        ? messageTypeLabel(assignment->messageType)
+                        : assignmentTypeLabel(assignment->type),
+                    0,
+                    28,
+                    DISPLAY_CONTENT_WIDTH);
     display.setFont(u8g2_font_7x14B_tf);
-    drawClippedText(preset.function, 0, 43, DISPLAY_CONTENT_WIDTH);
+    drawScrollingText(assignment->label, 0, 43, DISPLAY_CONTENT_WIDTH);
+    drawStatusFooter(assignment->messageType,
+                     profile->midiChannel,
+                     displayNumberForAssignment(*profile, *assignment),
+                     assignment->valueOn);
   }
 
-  drawStatusFooter(button.controlChange, button.pressValue, button.variableValue);
-  drawExpressionSlider();
   finishDisplayUpdate();
 }
 
@@ -450,14 +850,22 @@ void serviceDisplayUpdates(unsigned long now) {
 void enterEditMode(byte buttonIndex) {
   editMode = true;
   editButtonIndex = buttonIndex;
+  editAssignmentDirty = false;
   pendingEditDisplayUpdate = false;
   showingButtonOutput = false;
+  showingPresetChange = false;
+  showingDefaultsRestoreResult = false;
+  resetMarqueePhase();
   showEditModeScreen();
 }
 
 void exitEditMode() {
+  if (editAssignmentDirty && editButtonIndex != NO_BUTTON_SELECTED) {
+    saveButtonAssignment(editButtonIndex);
+  }
   editMode = false;
   editButtonIndex = NO_BUTTON_SELECTED;
+  editAssignmentDirty = false;
   pendingEditDisplayUpdate = false;
   showReadyScreen();
 }
@@ -467,40 +875,133 @@ void refreshCurrentScreen() {
     showEditModeScreen();
   } else if (showingButtonOutput) {
     showButtonOutput(lastButtonOutputIndex, false);
+  } else if (showingDefaultsRestoreResult) {
+    if (startDisplayUpdate()) {
+      drawDefaultsRestoreResultScreen(defaultsRestoreSucceeded);
+      finishDisplayUpdate();
+    }
+  } else if (showingPresetChange) {
+    showPresetChangeScreen();
   } else {
     showReadyScreen();
   }
 }
 
-void changeEditedPreset(int delta) {
+void serviceMarqueeUpdates(unsigned long now) {
+  if (!displayAvailable || now - lastMarqueeUpdateMs < MARQUEE_STEP_MS) return;
+  if (showingButtonOutput) return;
+  if (showingDefaultsRestoreResult) return;
+
+  lastMarqueeUpdateMs = now;
+  if (editMode) {
+    showEditModeScreen();
+  } else if (menuMode) {
+    drawMenuScreen();
+  } else if (showingPresetChange) {
+    showPresetChangeScreen();
+  } else {
+    showReadyScreen();
+  }
+}
+
+int assignmentLibraryCount() {
+  int count = 0;
+  for (uint8_t p = 0; p < deviceConfig.profileCount; ++p) {
+    count += deviceConfig.profiles[p].assignmentCount;
+  }
+  return count;
+}
+
+bool assignmentOptionAt(int option,
+                        ButtonAssignmentRef &reference,
+                        const DeviceProfileConfig **profile,
+                        const AssignmentConfig **assignment) {
+  if (profile != nullptr) *profile = nullptr;
+  if (assignment != nullptr) *assignment = nullptr;
+  reference = {UNASSIGNED_ID, UNASSIGNED_ID};
+  if (option <= 0) return option == 0;
+
+  int cursor = 1;
+  for (uint8_t p = 0; p < deviceConfig.profileCount; ++p) {
+    const DeviceProfileConfig &candidateProfile = deviceConfig.profiles[p];
+    for (uint8_t a = 0; a < candidateProfile.assignmentCount; ++a) {
+      if (cursor == option) {
+        reference = {candidateProfile.id, candidateProfile.assignments[a].id};
+        if (profile != nullptr) *profile = &candidateProfile;
+        if (assignment != nullptr) *assignment = &candidateProfile.assignments[a];
+        return true;
+      }
+      ++cursor;
+    }
+  }
+  return false;
+}
+
+int assignmentOptionForReference(const ButtonAssignmentRef &reference) {
+  if (!assignmentRefIsAssigned(reference)) return 0;
+  int cursor = 1;
+  for (uint8_t p = 0; p < deviceConfig.profileCount; ++p) {
+    const DeviceProfileConfig &profile = deviceConfig.profiles[p];
+    for (uint8_t a = 0; a < profile.assignmentCount; ++a) {
+      if (profile.id == reference.profileId && profile.assignments[a].id == reference.assignmentId) {
+        return cursor;
+      }
+      ++cursor;
+    }
+  }
+  return 0;
+}
+
+ButtonAssignmentRef assignmentRefForOption(int option) {
+  ButtonAssignmentRef reference{UNASSIGNED_ID, UNASSIGNED_ID};
+  assignmentOptionAt(option, reference, nullptr, nullptr);
+  return reference;
+}
+
+void assignmentLabelForOption(int option, char *output, size_t outputSize) {
+  if (option <= 0) {
+    strncpy(output, "Unassigned", outputSize);
+    output[outputSize - 1] = '\0';
+    return;
+  }
+
+  ButtonAssignmentRef reference{};
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = nullptr;
+  if (!assignmentOptionAt(option, reference, &profile, &assignment) ||
+      profile == nullptr || assignment == nullptr) {
+    strncpy(output, "Back", outputSize);
+    output[outputSize - 1] = '\0';
+    return;
+  }
+  snprintf(output, outputSize, "%s: %s", profile->name, assignment->label);
+  output[outputSize - 1] = '\0';
+}
+
+void changeEditedAssignment(int delta) {
   if (!editMode || editButtonIndex == NO_BUTTON_SELECTED) {
     return;
   }
 
   MidiButton &button = buttons[editButtonIndex];
-  int newPreset;
+  const int optionCount = assignmentLibraryCount() + 1;
+  int currentOption = assignmentOptionForReference(button.assignment);
 
-  if (button.presetIndex == NO_PRESET_SELECTED) {
-    newPreset = delta > 0 ? 0 : PRESET_COUNT - 1;
-  } else {
-    newPreset = button.presetIndex + delta;
+  int newOption = (currentOption + delta) % optionCount;
+  if (newOption < 0) newOption += optionCount;
+  const ButtonAssignmentRef newAssignment = assignmentRefForOption(newOption);
+
+  if (!assignmentRefsMatch(button.assignment, newAssignment)) {
+    applyAssignmentToButton(editButtonIndex, newAssignment);
+    editAssignmentDirty = true;
   }
 
-  if (newPreset < 0) {
-    newPreset = PRESET_COUNT - 1;
-  } else if (newPreset >= PRESET_COUNT) {
-    newPreset = 0;
-  }
-
-  if (buttons[editButtonIndex].presetIndex != newPreset) {
-    applyPresetToButton(editButtonIndex, newPreset);
-    saveButtonPreset(editButtonIndex);
-  }
-
-  requestEditDisplayUpdate();
+  pendingEditDisplayUpdate = false;
+  resetMarqueePhase();
+  showEditModeScreen();
 }
 
-bool updateEditButton(EditButton &button, unsigned long now) {
+int8_t updateEditButton(EditButton &button, unsigned long now) {
   const bool readingPressed = digitalRead(button.pin) == LOW;
 
   if (readingPressed != button.lastReadingPressed) {
@@ -511,83 +1012,808 @@ bool updateEditButton(EditButton &button, unsigned long now) {
   if ((now - button.lastChangeMs) >= DEBOUNCE_MS &&
       readingPressed != button.stablePressed) {
     button.stablePressed = readingPressed;
-    return button.stablePressed;
+    if (button.stablePressed) {
+      button.pressedAtMs = now;
+      button.holdHandled = false;
+    } else {
+      button.pressedAtMs = 0;
+    }
+    return button.stablePressed ? 1 : -1;
   }
 
-  return false;
+  return 0;
 }
 
-byte readExpressionMidiValue() {
-  const int rawValue = analogRead(EXPRESSION_1_PIN);
+void changeActivePreset(int delta) {
+  if (deviceConfig.presetCount < 2) return;
+  int currentIndex = 0;
+  for (uint8_t i = 0; i < deviceConfig.presetCount; ++i) {
+    if (deviceConfig.presets[i].id == deviceConfig.activePresetId) {
+      currentIndex = i;
+      break;
+    }
+  }
+  int nextIndex = (currentIndex + delta) % deviceConfig.presetCount;
+  if (nextIndex < 0) nextIndex += deviceConfig.presetCount;
+  if (setActivePresetId(deviceConfig.presets[nextIndex].id, true)) {
+    showPresetChangeScreen();
+  }
+}
 
-  if (!expressionInitialized) {
-    expressionSmoothedRaw = rawValue;
-    expressionInitialized = true;
+uint8_t readEncoderState() {
+  const uint8_t a = digitalRead(encoderControl.pinA) == LOW ? 1 : 0;
+  const uint8_t b = digitalRead(encoderControl.pinB) == LOW ? 1 : 0;
+  return (a << 1) | b;
+}
+
+int8_t updateEncoderRotation() {
+  static const int8_t transitionTable[16] = {
+    0, -1, 1, 0,
+    1, 0, 0, -1,
+    -1, 0, 0, 1,
+    0, 1, -1, 0
+  };
+  const uint8_t state = readEncoderState();
+  if (state == encoderControl.lastState) return 0;
+  encoderControl.accumulator += transitionTable[(encoderControl.lastState << 2) | state];
+  encoderControl.lastState = state;
+  if (encoderControl.accumulator >= 4) {
+    encoderControl.accumulator = 0;
+    return 1;
+  }
+  if (encoderControl.accumulator <= -4) {
+    encoderControl.accumulator = 0;
+    return -1;
+  }
+  return 0;
+}
+
+int8_t updateEncoderSwitch(unsigned long now) {
+  const bool readingPressed = digitalRead(encoderControl.switchPin) == LOW;
+
+  if (readingPressed != encoderControl.lastSwitchReadingPressed) {
+    encoderControl.lastSwitchReadingPressed = readingPressed;
+    encoderControl.switchLastChangeMs = now;
+  }
+
+  if ((now - encoderControl.switchLastChangeMs) >= DEBOUNCE_MS &&
+      readingPressed != encoderControl.stableSwitchPressed) {
+    encoderControl.stableSwitchPressed = readingPressed;
+    if (encoderControl.stableSwitchPressed) {
+      encoderControl.switchPressedAtMs = now;
+      encoderControl.switchHoldHandled = false;
+    } else {
+      encoderControl.switchPressedAtMs = 0;
+    }
+    return encoderControl.stableSwitchPressed ? 1 : -1;
+  }
+
+  return 0;
+}
+
+int8_t updateQtEncoderRotation() {
+  if (!qtEncoderControl.available) return 0;
+  if (digitalRead(qtEncoderControl.interruptPin) == HIGH) return 0;
+  const int32_t delta = qtEncoder.getEncoderDelta();
+  if (delta > 0) return 1;
+  if (delta < 0) return -1;
+  return 0;
+}
+
+int8_t updateQtEncoderSwitch(unsigned long now) {
+  if (!qtEncoderControl.available) return 0;
+  if (digitalRead(qtEncoderControl.interruptPin) == HIGH &&
+      !qtEncoderControl.stableSwitchPressed &&
+      !qtEncoderControl.lastSwitchReadingPressed) {
+    return 0;
+  }
+
+  const bool readingPressed = qtEncoder.digitalRead(STEMMA_QT_ENCODER_SWITCH_PIN) == LOW;
+
+  if (readingPressed != qtEncoderControl.lastSwitchReadingPressed) {
+    qtEncoderControl.lastSwitchReadingPressed = readingPressed;
+    qtEncoderControl.switchLastChangeMs = now;
+  }
+
+  if ((now - qtEncoderControl.switchLastChangeMs) >= DEBOUNCE_MS &&
+      readingPressed != qtEncoderControl.stableSwitchPressed) {
+    qtEncoderControl.stableSwitchPressed = readingPressed;
+    if (qtEncoderControl.stableSwitchPressed) {
+      qtEncoderControl.switchPressedAtMs = now;
+      qtEncoderControl.switchHoldHandled = false;
+    } else {
+      qtEncoderControl.switchPressedAtMs = 0;
+    }
+    return qtEncoderControl.stableSwitchPressed ? 1 : -1;
+  }
+
+  return 0;
+}
+
+bool usingGpioEncoderControls() {
+  return deviceConfig.hardware.menuControlMode == MenuControlMode::Encoder;
+}
+
+bool usingQtEncoderControls() {
+  return deviceConfig.hardware.menuControlMode == MenuControlMode::StemmaQtEncoder;
+}
+
+bool usingEncoderControls() {
+  return usingGpioEncoderControls() || usingQtEncoderControls();
+}
+
+int8_t updateActiveEncoderRotation() {
+  if (usingGpioEncoderControls()) return updateEncoderRotation();
+  if (usingQtEncoderControls()) return updateQtEncoderRotation();
+  return 0;
+}
+
+int8_t updateActiveEncoderSwitch(unsigned long now) {
+  if (usingGpioEncoderControls()) return updateEncoderSwitch(now);
+  if (usingQtEncoderControls()) return updateQtEncoderSwitch(now);
+  return 0;
+}
+
+bool activeEncoderSwitchPressed() {
+  return usingQtEncoderControls() ? qtEncoderControl.stableSwitchPressed : encoderControl.stableSwitchPressed;
+}
+
+bool activeEncoderSwitchHoldHandled() {
+  return usingQtEncoderControls() ? qtEncoderControl.switchHoldHandled : encoderControl.switchHoldHandled;
+}
+
+unsigned long activeEncoderSwitchPressedAt() {
+  return usingQtEncoderControls() ? qtEncoderControl.switchPressedAtMs : encoderControl.switchPressedAtMs;
+}
+
+void setActiveEncoderSwitchHoldHandled(bool handled) {
+  if (usingQtEncoderControls()) {
+    qtEncoderControl.switchHoldHandled = handled;
   } else {
-    expressionSmoothedRaw += (rawValue - expressionSmoothedRaw) / 8;
+    encoderControl.switchHoldHandled = handled;
   }
-
-  const int calibratedRaw = constrain(expressionSmoothedRaw, EXPRESSION_RAW_MIN, EXPRESSION_RAW_MAX);
-  long mappedValue = map(calibratedRaw, EXPRESSION_RAW_MIN, EXPRESSION_RAW_MAX, 0, 127);
-  mappedValue = constrain(mappedValue, 0, 127);
-
-  if (EXPRESSION_INVERT) {
-    mappedValue = 127 - mappedValue;
-  }
-
-  if (mappedValue <= EXPRESSION_LOW_CLAMP) {
-    mappedValue = 0;
-  } else if (mappedValue >= EXPRESSION_HIGH_CLAMP) {
-    mappedValue = 127;
-  }
-
-  return static_cast<byte>(mappedValue);
 }
 
-void serviceExpressionPedal(unsigned long now) {
-  const bool wasInitialized = expressionInitialized;
-  const byte midiValue = readExpressionMidiValue();
-  currentExpressionMidiValue = midiValue;
+void setAllEncoderSwitchHoldHandled(bool handled) {
+  encoderControl.switchHoldHandled = handled;
+  qtEncoderControl.switchHoldHandled = handled;
+}
 
-  if (!wasInitialized) {
-    lastExpressionMidiValue = midiValue;
-    lastExpressionDisplayValue = midiValue;
+void resetStompButtonStates() {
+  const unsigned long now = millis();
+  for (byte i = 0; i < deviceConfig.hardware.buttonCount; ++i) {
+    const bool pressed = digitalRead(buttons[i].pin) == LOW;
+    buttons[i].stablePressed = pressed;
+    buttons[i].lastReadingPressed = pressed;
+    buttons[i].lastChangeMs = now;
+    buttons[i].pressedAtMs = pressed ? now : 0;
+    buttons[i].editHoldHandled = false;
+  }
+}
+
+uint8_t activePresetIndex() {
+  for (uint8_t i = 0; i < deviceConfig.presetCount; ++i) {
+    if (deviceConfig.presets[i].id == deviceConfig.activePresetId) return i;
+  }
+  return 0;
+}
+
+void setActivePresetIndex(uint8_t index) {
+  if (index >= deviceConfig.presetCount) return;
+  setActivePresetId(deviceConfig.presets[index].id, true);
+}
+
+void resetCurrentPresetState() {
+  applyActivePreset();
+  resetStompButtonStates();
+  menuMode = false;
+  editMode = false;
+  showPresetStateResetScreen();
+}
+
+int assignmentOptionForSwitch(byte switchIndex) {
+  if (switchIndex >= deviceConfig.hardware.buttonCount) return 0;
+  return assignmentOptionForReference(buttons[switchIndex].assignment);
+}
+
+int menuItemCount() {
+  switch (menuScreen) {
+    case MenuScreen::Presets:
+      return deviceConfig.presetCount + 1;
+    case MenuScreen::Switches:
+      return deviceConfig.hardware.buttonCount + 1;
+    case MenuScreen::Assignments:
+      return assignmentLibraryCount() + 2;
+    case MenuScreen::MidiOutput:
+      return 4;
+    case MenuScreen::HomeDelay:
+      return HOME_DELAY_OPTION_COUNT + 1;
+    case MenuScreen::HoldEdit:
+      return 3;
+    case MenuScreen::System:
+      return 5;
+    case MenuScreen::ConfirmResetState:
+    case MenuScreen::ConfirmWebConfig:
+    case MenuScreen::ConfirmBootloader:
+    case MenuScreen::ConfirmRestoreDefaults:
+      return 2;
+    case MenuScreen::Main:
+    default:
+      return 7;
+  }
+}
+
+void clampMenuIndex() {
+  const int count = menuItemCount();
+  if (menuIndex < 0) menuIndex = count - 1;
+  if (menuIndex >= count) menuIndex = 0;
+}
+
+void drawMenuScreen() {
+  if (!startDisplayUpdate()) return;
+
+  const uint8_t currentScreen = static_cast<uint8_t>(menuScreen);
+  if (lastMenuMarqueeScreen != currentScreen || lastMenuMarqueeIndex != menuIndex) {
+    resetMarqueePhase();
+    lastMenuMarqueeScreen = currentScreen;
+    lastMenuMarqueeIndex = menuIndex;
+  }
+
+  char primary[32] = "";
+  char secondary[32] = "";
+  char tertiary[24] = "";
+  char headerBuffer[32] = "MENU";
+  const char *header = headerBuffer;
+
+  switch (menuScreen) {
+    case MenuScreen::Main:
+      switch (menuIndex) {
+        case 0:
+          strncpy(primary, "Presets", sizeof(primary));
+          strncpy(secondary, activePresetConst().name, sizeof(secondary) - 1);
+          break;
+        case 1:
+          strncpy(primary, "Switch Assign", sizeof(primary));
+          strncpy(secondary, "Edit Assignments", sizeof(secondary) - 1);
+          break;
+        case 2:
+          strncpy(primary, "MIDI Output", sizeof(primary));
+          strncpy(secondary, midiOutputModeLabel(deviceConfig.settings.midiOutputMode), sizeof(secondary) - 1);
+          break;
+        case 3:
+          strncpy(primary, "Home Delay", sizeof(primary));
+          snprintf(secondary, sizeof(secondary), "%u seconds", deviceConfig.settings.buttonScreenSeconds);
+          break;
+        case 4:
+          strncpy(primary, "Hold Edit", sizeof(primary));
+          strncpy(secondary, deviceConfig.settings.holdToEditEnabled ? "On" : "Off", sizeof(secondary) - 1);
+          break;
+        case 5:
+          strncpy(primary, "System", sizeof(primary));
+          strncpy(secondary, "Config & reset", sizeof(secondary) - 1);
+          break;
+        default:
+          strncpy(primary, "Exit", sizeof(primary));
+          strncpy(secondary, "Close menu", sizeof(secondary) - 1);
+          break;
+      }
+      break;
+
+    case MenuScreen::Presets:
+      header = "PRESETS";
+      strncpy(secondary, activePresetConst().name, sizeof(secondary) - 1);
+      if (menuIndex >= deviceConfig.presetCount) {
+        strncpy(primary, "Back", sizeof(primary));
+      } else {
+        strncpy(primary, deviceConfig.presets[menuIndex].name, sizeof(primary) - 1);
+      }
+      break;
+
+    case MenuScreen::Switches: {
+      header = "SWITCHES";
+      if (menuIndex >= deviceConfig.hardware.buttonCount) {
+        strncpy(primary, "Back", sizeof(primary));
+      } else {
+        snprintf(primary, sizeof(primary), "Switch %d", menuIndex + 1);
+        assignmentLabelForOption(assignmentOptionForSwitch(menuIndex), secondary, sizeof(secondary));
+      }
+      break;
+    }
+
+    case MenuScreen::Assignments: {
+      header = activePresetConst().name;
+      if (menuIndex > assignmentLibraryCount()) {
+        strncpy(primary, "Back", sizeof(primary));
+        secondary[0] = '\0';
+      } else if (menuIndex <= 0) {
+        strncpy(primary, "Unassigned", sizeof(primary));
+        snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+      } else {
+        ButtonAssignmentRef reference{};
+        const DeviceProfileConfig *profile = nullptr;
+        const AssignmentConfig *assignment = nullptr;
+        if (assignmentOptionAt(menuIndex, reference, &profile, &assignment) &&
+            profile != nullptr && assignment != nullptr) {
+          strncpy(primary, assignment->label, sizeof(primary) - 1);
+          snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+        } else {
+          strncpy(primary, "Back", sizeof(primary));
+          secondary[0] = '\0';
+        }
+      }
+      break;
+    }
+
+    case MenuScreen::MidiOutput:
+      header = "OUTPUT";
+      if (menuIndex >= 3) {
+        strncpy(primary, "Back", sizeof(primary));
+      } else {
+        const MidiOutputMode optionMode = midiOutputModeForOption(menuIndex);
+        strncpy(primary, midiOutputModeLabel(optionMode), sizeof(primary) - 1);
+        strncpy(secondary,
+                optionMode == deviceConfig.settings.midiOutputMode ? "Current" : "Press to save",
+                sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::HomeDelay:
+      header = "HOME DELAY";
+      if (menuIndex >= HOME_DELAY_OPTION_COUNT) {
+        strncpy(primary, "Back", sizeof(primary));
+      } else {
+        const uint8_t seconds = HOME_DELAY_OPTIONS[menuIndex];
+        snprintf(primary, sizeof(primary), "%u seconds", seconds);
+        strncpy(secondary,
+                seconds == deviceConfig.settings.buttonScreenSeconds ? "Current" : "Press to save",
+                sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::HoldEdit:
+      header = "HOLD EDIT";
+      if (menuIndex >= 2) {
+        strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary));
+      } else {
+        const bool optionEnabled = menuIndex == 1;
+        strncpy(primary, optionEnabled ? "On" : "Off", sizeof(primary));
+        strncpy(secondary,
+                optionEnabled == deviceConfig.settings.holdToEditEnabled ? "Current" : "Press to save",
+                sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::System:
+      header = "SYSTEM";
+      switch (menuIndex) {
+        case 0:
+          strncpy(primary, "Web Config", sizeof(primary));
+          strncpy(secondary, "USB network", sizeof(secondary) - 1);
+          strncpy(tertiary, "192.168.7.1", sizeof(tertiary) - 1);
+          break;
+        case 1:
+          strncpy(primary, "Reset State", sizeof(primary));
+          strncpy(secondary, activePresetConst().name, sizeof(secondary) - 1);
+          break;
+        case 2:
+          strncpy(primary, "Firmware Update", sizeof(primary));
+          strncpy(secondary, "RPI-RP2 drive", sizeof(secondary) - 1);
+          break;
+        case 3:
+          strncpy(primary, "Restore to default settings", sizeof(primary));
+          strncpy(secondary, "Factory defaults", sizeof(secondary) - 1);
+          break;
+        default:
+          strncpy(primary, "Back", sizeof(primary));
+          strncpy(secondary, "Return", sizeof(secondary));
+          break;
+      }
+      break;
+
+    case MenuScreen::ConfirmResetState:
+      header = "RESET";
+      strncpy(primary, menuIndex == 0 ? "Reset state" : "Back", sizeof(primary));
+      strncpy(secondary, menuIndex == 0 ? "No MIDI sent" : "Cancel", sizeof(secondary));
+      break;
+
+    case MenuScreen::ConfirmWebConfig:
+      header = "WEB CONFIG";
+      strncpy(primary, menuIndex == 0 ? "Start web config" : "Back", sizeof(primary));
+      strncpy(secondary, "Press to choose", sizeof(secondary));
+      break;
+
+    case MenuScreen::ConfirmBootloader:
+      header = "UPDATE";
+      strncpy(primary, menuIndex == 0 ? "Firmware update" : "Back", sizeof(primary));
+      strncpy(secondary, "Press to choose", sizeof(secondary));
+      break;
+
+    case MenuScreen::ConfirmRestoreDefaults:
+      header = "ARE YOU SURE?";
+      strncpy(primary, menuIndex == 0 ? "Restore to default settings" : "Back", sizeof(primary));
+      strncpy(secondary, menuIndex == 0 ? "Erase saved config" : "Cancel", sizeof(secondary));
+      break;
+  }
+
+  display.clearBuffer();
+  drawHeader(header);
+  display.setFont(u8g2_font_7x14B_tf);
+  drawCenteredScrollingText(36, primary);
+  display.setFont(u8g2_font_6x10_tf);
+  if (secondary[0] != '\0') {
+    drawCenteredClippedText(tertiary[0] != '\0' ? 51 : 55, secondary);
+  }
+  if (tertiary[0] != '\0') {
+    display.setFont(u8g2_font_5x8_tf);
+    drawCenteredClippedText(63, tertiary);
+  }
+  drawMenuPositionIndicator(menuIndex, menuItemCount());
+  finishDisplayUpdate();
+}
+
+void enterMenu() {
+  editMode = false;
+  menuMode = true;
+  menuScreen = MenuScreen::Main;
+  menuIndex = 0;
+  lastMenuInputMs = millis();
+  editPreviousButton.holdHandled = true;
+  editNextButton.holdHandled = true;
+  setAllEncoderSwitchHoldHandled(true);
+  showingButtonOutput = false;
+  showingPresetChange = false;
+  showingDefaultsRestoreResult = false;
+  resetMenuMarqueeTracking();
+  drawMenuScreen();
+}
+
+void exitMenu() {
+  menuMode = false;
+  resetStompButtonStates();
+  showReadyScreen();
+}
+
+int mainMenuIndexForScreen(MenuScreen screen) {
+  switch (screen) {
+    case MenuScreen::Presets:
+      return 0;
+    case MenuScreen::Switches:
+    case MenuScreen::Assignments:
+      return 1;
+    case MenuScreen::MidiOutput:
+      return 2;
+    case MenuScreen::HomeDelay:
+      return 3;
+    case MenuScreen::ConfirmResetState:
+    case MenuScreen::HoldEdit:
+      return 4;
+    case MenuScreen::System:
+    case MenuScreen::ConfirmWebConfig:
+    case MenuScreen::ConfirmBootloader:
+    case MenuScreen::ConfirmRestoreDefaults:
+      return 5;
+    case MenuScreen::Main:
+    default:
+      return 0;
+  }
+}
+
+int systemMenuIndexForScreen(MenuScreen screen) {
+  switch (screen) {
+    case MenuScreen::ConfirmWebConfig:
+      return 0;
+    case MenuScreen::ConfirmResetState:
+      return 1;
+    case MenuScreen::ConfirmBootloader:
+      return 2;
+    case MenuScreen::ConfirmRestoreDefaults:
+      return 3;
+    case MenuScreen::System:
+    default:
+      return 0;
+  }
+}
+
+void menuBack() {
+  if (menuScreen == MenuScreen::Main) {
+    exitMenu();
+    return;
+  }
+  if (menuScreen == MenuScreen::Assignments) {
+    menuScreen = MenuScreen::Switches;
+    menuIndex = menuSwitchIndex;
+  } else if (menuScreen == MenuScreen::System) {
+    menuScreen = MenuScreen::Main;
+    menuIndex = mainMenuIndexForScreen(MenuScreen::System);
+  } else if (menuScreen == MenuScreen::ConfirmResetState ||
+             menuScreen == MenuScreen::ConfirmWebConfig ||
+             menuScreen == MenuScreen::ConfirmBootloader ||
+             menuScreen == MenuScreen::ConfirmRestoreDefaults) {
+    const int parentIndex = systemMenuIndexForScreen(menuScreen);
+    menuScreen = MenuScreen::System;
+    menuIndex = parentIndex;
+  } else {
+    const int parentIndex = mainMenuIndexForScreen(menuScreen);
+    menuScreen = MenuScreen::Main;
+    menuIndex = parentIndex;
+  }
+  drawMenuScreen();
+}
+
+void startWebConfigReboot() {
+  watchdog_hw->scratch[0] = WEB_CONFIG_BOOT_MAGIC;
+  if (displayAvailable && startDisplayUpdate()) {
+    display.clearBuffer();
+    drawHeader("WEB CONFIG");
+    display.setFont(u8g2_font_7x14B_tf);
+    drawCenteredText(39, "Restarting");
+    finishDisplayUpdate();
+  }
+  delay(150);
+  rp2040.reboot();
+}
+
+void startBootloaderMode() {
+  if (displayAvailable && startDisplayUpdate()) {
+    display.clearBuffer();
+    drawHeader("UPDATE");
+    display.setFont(u8g2_font_7x14B_tf);
+    drawCenteredText(39, "Bootloader");
+    finishDisplayUpdate();
+  }
+  delay(150);
+  reset_usb_boot(0, 0);
+}
+
+void restoreDefaultSettings() {
+  configStore.loadDefaults(deviceConfig);
+  const bool saved = configStore.save(deviceConfig);
+  applyActivePreset();
+  resetStompButtonStates();
+  menuMode = false;
+  editMode = false;
+  if (saved) {
+    showDefaultsRestoredScreen();
+  } else {
+    showDefaultsRestoreFailedScreen();
+  }
+}
+
+void selectMenuItem() {
+  lastMenuInputMs = millis();
+  switch (menuScreen) {
+    case MenuScreen::Main:
+      switch (menuIndex) {
+        case 0:
+          menuScreen = MenuScreen::Presets;
+          menuIndex = activePresetIndex();
+          break;
+        case 1:
+          menuScreen = MenuScreen::Switches;
+          menuIndex = 0;
+          break;
+        case 2:
+          menuScreen = MenuScreen::MidiOutput;
+          menuIndex = optionForMidiOutputMode(deviceConfig.settings.midiOutputMode);
+          break;
+        case 3:
+          menuScreen = MenuScreen::HomeDelay;
+          menuIndex = optionForHomeDelay(deviceConfig.settings.buttonScreenSeconds);
+          break;
+        case 4:
+          menuScreen = MenuScreen::HoldEdit;
+          menuIndex = deviceConfig.settings.holdToEditEnabled ? 1 : 0;
+          break;
+        case 5:
+          menuScreen = MenuScreen::System;
+          menuIndex = 0;
+          break;
+        default:
+          exitMenu();
+          return;
+      }
+      break;
+
+    case MenuScreen::Presets:
+      if (menuIndex >= deviceConfig.presetCount) {
+        menuBack();
+        return;
+      }
+      setActivePresetIndex(menuIndex);
+      break;
+
+    case MenuScreen::Switches:
+      if (menuIndex >= deviceConfig.hardware.buttonCount) {
+        menuBack();
+        return;
+      }
+      menuSwitchIndex = menuIndex;
+      menuScreen = MenuScreen::Assignments;
+      menuIndex = assignmentOptionForSwitch(menuSwitchIndex);
+      break;
+
+    case MenuScreen::Assignments:
+      if (menuIndex > assignmentLibraryCount()) {
+        menuBack();
+        return;
+      }
+      applyAssignmentToButton(menuSwitchIndex, assignmentRefForOption(menuIndex));
+      saveButtonAssignment(menuSwitchIndex);
+      menuScreen = MenuScreen::Switches;
+      menuIndex = menuSwitchIndex;
+      break;
+
+    case MenuScreen::MidiOutput:
+      if (menuIndex >= 3) {
+        menuBack();
+        return;
+      }
+      deviceConfig.settings.midiOutputMode = midiOutputModeForOption(menuIndex);
+      configStore.save(deviceConfig);
+      break;
+
+    case MenuScreen::HomeDelay:
+      if (menuIndex >= HOME_DELAY_OPTION_COUNT) {
+        menuBack();
+        return;
+      }
+      deviceConfig.settings.buttonScreenSeconds = HOME_DELAY_OPTIONS[menuIndex];
+      configStore.save(deviceConfig);
+      break;
+
+    case MenuScreen::HoldEdit:
+      if (menuIndex >= 2) {
+        menuBack();
+        return;
+      }
+      deviceConfig.settings.holdToEditEnabled = menuIndex == 1;
+      configStore.save(deviceConfig);
+      break;
+
+    case MenuScreen::System:
+      switch (menuIndex) {
+        case 0:
+          menuScreen = MenuScreen::ConfirmWebConfig;
+          menuIndex = 0;
+          break;
+        case 1:
+          menuScreen = MenuScreen::ConfirmResetState;
+          menuIndex = 0;
+          break;
+        case 2:
+          menuScreen = MenuScreen::ConfirmBootloader;
+          menuIndex = 0;
+          break;
+        case 3:
+          menuScreen = MenuScreen::ConfirmRestoreDefaults;
+          menuIndex = 1;
+          break;
+        default:
+          menuBack();
+          return;
+      }
+      break;
+
+    case MenuScreen::ConfirmResetState:
+      if (menuIndex == 0) {
+        resetCurrentPresetState();
+        return;
+      }
+      menuBack();
+      return;
+
+    case MenuScreen::ConfirmWebConfig:
+      if (menuIndex == 0) startWebConfigReboot();
+      menuBack();
+      return;
+
+    case MenuScreen::ConfirmBootloader:
+      if (menuIndex == 0) startBootloaderMode();
+      menuBack();
+      return;
+
+    case MenuScreen::ConfirmRestoreDefaults:
+      if (menuIndex == 0) {
+        restoreDefaultSettings();
+        return;
+      }
+      menuBack();
+      return;
+  }
+  clampMenuIndex();
+  drawMenuScreen();
+}
+
+void moveMenuSelection(int delta) {
+  menuIndex += delta;
+  clampMenuIndex();
+  lastMenuInputMs = millis();
+  drawMenuScreen();
+}
+
+void serviceMenuControls(int8_t previousEvent,
+                         int8_t nextEvent,
+                         int8_t encoderRotation,
+                         int8_t encoderSwitchEvent,
+                         unsigned long now) {
+  if (now - lastMenuInputMs >= MENU_TIMEOUT_MS) {
+    exitMenu();
     return;
   }
 
-  const byte valueDelta = midiValue > lastExpressionMidiValue
-                              ? midiValue - lastExpressionMidiValue
-                              : lastExpressionMidiValue - midiValue;
-
-  if (valueDelta >= EXPRESSION_MIDI_DEADBAND &&
-      now - lastExpressionSentAtMs >= EXPRESSION_SEND_INTERVAL_MS) {
-    lastExpressionMidiValue = midiValue;
-    lastExpressionSentAtMs = now;
-    sendControlChange(MIDI_CHANNEL_1, EXPRESSION_1_CC, midiValue);
+  if (usingEncoderControls()) {
+    if (encoderRotation != 0) moveMenuSelection(encoderRotation);
+    if (activeEncoderSwitchPressed() &&
+        !activeEncoderSwitchHoldHandled() &&
+        activeEncoderSwitchPressedAt() > 0 &&
+        now - activeEncoderSwitchPressedAt() >= MENU_HOLD_MS) {
+      setActiveEncoderSwitchHoldHandled(true);
+      lastMenuInputMs = now;
+      menuBack();
+      return;
+    }
+    if (encoderSwitchEvent < 0 && !activeEncoderSwitchHoldHandled()) {
+      selectMenuItem();
+    }
+    return;
   }
 
-  if (midiValue != lastExpressionDisplayValue &&
-      now - lastExpressionDisplayAtMs >= EXPRESSION_DISPLAY_UPDATE_MS) {
-    lastExpressionDisplayValue = midiValue;
-    lastExpressionDisplayAtMs = now;
-    refreshCurrentScreen();
+  if (editPreviousButton.stablePressed &&
+      !editPreviousButton.holdHandled &&
+      editPreviousButton.pressedAtMs > 0 &&
+      now - editPreviousButton.pressedAtMs >= MENU_HOLD_MS) {
+    editPreviousButton.holdHandled = true;
+    lastMenuInputMs = now;
+    menuBack();
+    return;
+  }
+
+  if (editNextButton.stablePressed &&
+      !editNextButton.holdHandled &&
+      editNextButton.pressedAtMs > 0 &&
+      now - editNextButton.pressedAtMs >= MENU_HOLD_MS) {
+    editNextButton.holdHandled = true;
+    lastMenuInputMs = now;
+    selectMenuItem();
+    return;
+  }
+
+  if (previousEvent < 0 && !editPreviousButton.holdHandled) {
+    moveMenuSelection(-1);
+  }
+  if (nextEvent < 0 && !editNextButton.holdHandled) {
+    moveMenuSelection(1);
+  }
+}
+
+void servicePerformanceControls(unsigned long now) {
+  if (usingEncoderControls()) {
+    if (activeEncoderSwitchPressed() &&
+        !activeEncoderSwitchHoldHandled() &&
+        activeEncoderSwitchPressedAt() > 0 &&
+        now - activeEncoderSwitchPressedAt() >= MENU_HOLD_MS) {
+      setActiveEncoderSwitchHoldHandled(true);
+      enterMenu();
+    }
+    return;
+  }
+
+  if (editNextButton.stablePressed &&
+      !editNextButton.holdHandled &&
+      editNextButton.pressedAtMs > 0 &&
+      now - editNextButton.pressedAtMs >= MENU_HOLD_MS) {
+    editNextButton.holdHandled = true;
+    enterMenu();
+    return;
   }
 }
 
 void setupUSBMIDI() {
-  if (!TinyUSBDevice.isInitialized()) {
-    TinyUSBDevice.begin(0);
-  }
-
-  Serial.begin(115200);
-  usbMidi.setStringDescriptor("KB2040 MIDI Ctrl");
-  MIDI.begin(MIDI_CHANNEL_OMNI);
-
-  if (TinyUSBDevice.mounted()) {
-    TinyUSBDevice.detach();
-    delay(10);
-    TinyUSBDevice.attach();
-  }
+  USB.setManufacturer("KB2040 Stompbox");
+  USB.setProduct("KB2040 MIDI Ctrl");
+  MidiUSB.setName("KB2040 MIDI Ctrl");
+  MidiUSB.begin();
 }
 
 void setupDINMIDI() {
@@ -595,29 +1821,12 @@ void setupDINMIDI() {
   DIN_MIDI.begin(MIDI_CHANNEL_OMNI);
 }
 
-void setup() {
-  setupUSBMIDI();
-  setupDINMIDI();
-  pinMode(LED_BUILTIN, OUTPUT);
-  analogReadResolution(12);
-
-  for (byte i = 0; i < BUTTON_COUNT; i++) {
-    pinMode(buttons[i].pin, INPUT_PULLUP);
-  }
-
-  pinMode(EDIT_PREVIOUS_PIN, INPUT_PULLUP);
-  pinMode(EDIT_NEXT_PIN, INPUT_PULLUP);
-  pinMode(EXPRESSION_1_PIN, INPUT_PULLUP);
-  lastExpressionMidiValue = readExpressionMidiValue();
-  currentExpressionMidiValue = lastExpressionMidiValue;
-  lastExpressionDisplayValue = lastExpressionMidiValue;
-
-  EEPROM.begin(EEPROM_SIZE);
-  loadButtonPresets();
-
+void setupDisplay() {
   delay(50);
   Wire1.begin();
+  Wire1.setClock(I2C_CLOCK_HZ);
   configureI2CTimeout();
+  display.setBusClock(I2C_CLOCK_HZ);
   display.begin();
   display.setPowerSave(0);
   display.setFont(u8g2_font_6x10_tf);
@@ -627,6 +1836,87 @@ void setup() {
     displayAvailable = false;
     clearI2CTimeoutFlag();
   }
+}
+
+void setupQtEncoder() {
+  qtEncoderControl.available = false;
+  if (!usingQtEncoderControls()) return;
+
+  Wire.begin();
+  Wire.setClock(I2C_CLOCK_HZ);
+  if (!qtEncoder.begin(STEMMA_QT_ENCODER_ADDRESS)) return;
+
+  qtEncoder.pinMode(STEMMA_QT_ENCODER_SWITCH_PIN, INPUT_PULLUP);
+  qtEncoder.setGPIOInterrupts((uint32_t)1 << STEMMA_QT_ENCODER_SWITCH_PIN, 1);
+  qtEncoder.enableEncoderInterrupt();
+  qtEncoder.setEncoderPosition(0);
+  qtEncoderControl.available = true;
+}
+
+bool qtEncoderBootShortcutPressed() {
+  return qtEncoderControl.available &&
+         qtEncoder.digitalRead(STEMMA_QT_ENCODER_SWITCH_PIN) == LOW;
+}
+
+void setup() {
+  loadDeviceConfiguration();
+  pinMode(LED_BUILTIN, OUTPUT);
+  analogReadResolution(12);
+
+  for (byte i = 0; i < deviceConfig.hardware.buttonCount; i++) {
+    pinMode(buttons[i].pin, INPUT_PULLUP);
+  }
+
+  pinMode(editPreviousButton.pin, INPUT_PULLUP);
+  pinMode(editNextButton.pin, INPUT_PULLUP);
+  pinMode(encoderControl.pinA, INPUT_PULLUP);
+  pinMode(encoderControl.pinB, INPUT_PULLUP);
+  pinMode(encoderControl.switchPin, INPUT_PULLUP);
+  pinMode(qtEncoderControl.interruptPin, INPUT_PULLUP);
+  pinMode(WEB_CONFIG_RECOVERY_PIN, INPUT_PULLUP);
+
+  delay(30);
+  encoderControl.lastState = readEncoderState();
+  setupQtEncoder();
+  webConfigMode = watchdog_hw->scratch[0] == WEB_CONFIG_BOOT_MAGIC ||
+                  digitalRead(WEB_CONFIG_RECOVERY_PIN) == LOW ||
+                  qtEncoderBootShortcutPressed() ||
+                  (digitalRead(editPreviousButton.pin) == LOW &&
+                   digitalRead(editNextButton.pin) == LOW);
+  watchdog_hw->scratch[0] = 0;
+
+  setupDisplay();
+  if (webConfigMode) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    const bool webDisplayDetected = displayAvailable;
+    if (webDisplayDetected) {
+      showWebConfigStartingScreen();
+    }
+    webConfigServer.begin();
+    if (webDisplayDetected) {
+      display.setPowerSave(1);
+      displayAvailable = true;
+      clearI2CTimeoutFlag();
+    }
+    showWebConfigScreen();
+    if (webDisplayDetected) {
+      displayAvailable = true;
+      clearI2CTimeoutFlag();
+      delay(5);
+      showWebConfigScreen();
+      displayAvailable = true;
+      clearI2CTimeoutFlag();
+      display.setPowerSave(0);
+      if (getI2CTimeoutFlag()) {
+        displayAvailable = false;
+        clearI2CTimeoutFlag();
+      }
+    }
+    return;
+  }
+
+  setupUSBMIDI();
+  setupDINMIDI();
 
   if (displayAvailable) {
     showReadyScreen();
@@ -634,35 +1924,74 @@ void setup() {
 }
 
 void loop() {
-#ifdef TINYUSB_NEED_POLLING_TASK
-  TinyUSBDevice.task();
-#endif
-
-  MIDI.read();
+  if (webConfigMode) {
+    webConfigServer.process();
+    return;
+  }
 
   const unsigned long now = millis();
   bool anyButtonPressed = false;
-  serviceExpressionPedal(now);
+  const int8_t previousEditEvent = updateEditButton(editPreviousButton, now);
+  const int8_t nextEditEvent = updateEditButton(editNextButton, now);
+  const int8_t encoderRotation = updateActiveEncoderRotation();
+  const int8_t encoderSwitchEvent = updateActiveEncoderSwitch(now);
+
+  if (menuMode) {
+    serviceMenuControls(previousEditEvent, nextEditEvent, encoderRotation, encoderSwitchEvent, now);
+    serviceMarqueeUpdates(now);
+    digitalWrite(LED_BUILTIN, LOW);
+    return;
+  }
 
   if (!editMode &&
       showingButtonOutput &&
-      now - buttonOutputShownAtMs >= BUTTON_OUTPUT_SCREEN_MS) {
+      now - buttonOutputShownAtMs >= static_cast<unsigned long>(deviceConfig.settings.buttonScreenSeconds) * 1000UL) {
     showReadyScreen();
   }
 
-  if (editMode) {
-    if (updateEditButton(editPreviousButton, now)) {
-      changeEditedPreset(-1);
-    }
+  if (!editMode &&
+      showingPresetChange &&
+      now - presetShownAtMs >= PRESET_SCREEN_MS) {
+    showReadyScreen();
+  }
 
-    if (updateEditButton(editNextButton, now)) {
-      changeEditedPreset(1);
+  if (!editMode &&
+      showingDefaultsRestoreResult &&
+      now - defaultsRestoreShownAtMs >= PRESET_SCREEN_MS) {
+    showReadyScreen();
+  }
+
+  serviceMarqueeUpdates(now);
+
+  if (editMode) {
+    if (usingEncoderControls()) {
+      if (encoderRotation != 0) {
+        changeEditedAssignment(encoderRotation);
+      }
+
+      if (encoderSwitchEvent < 0 && !activeEncoderSwitchHoldHandled()) {
+        exitEditMode();
+      }
+    } else {
+      if (previousEditEvent > 0) {
+        changeEditedAssignment(-1);
+      }
+
+      if (nextEditEvent > 0) {
+        changeEditedAssignment(1);
+      }
     }
 
     serviceDisplayUpdates(now);
+  } else {
+    servicePerformanceControls(now);
+    if (menuMode) {
+      digitalWrite(LED_BUILTIN, LOW);
+      return;
+    }
   }
 
-  for (byte i = 0; i < BUTTON_COUNT; i++) {
+  for (byte i = 0; i < deviceConfig.hardware.buttonCount; i++) {
     MidiButton &button = buttons[i];
     const bool readingPressed = digitalRead(button.pin) == LOW;
 
@@ -678,26 +2007,34 @@ void loop() {
       if (button.stablePressed) {
         button.pressedAtMs = now;
         button.editHoldHandled = false;
+        button.presetToggleHandled = false;
 
         if (editMode) {
           if (i == editButtonIndex) {
             exitEditMode();
           }
         } else {
-          if (!button.variableValue) {
-            sendControlChange(MIDI_CHANNEL_1, button.controlChange, button.pressValue);
+          button.presetToggleHandled = handlePresetTogglePress(i);
+          if (!button.presetToggleHandled) {
+            sendButtonPress(i);
+            showButtonOutput(i);
           }
-          showButtonOutput(i);
         }
       } else {
+        if (!editMode && !button.presetToggleHandled) {
+          sendButtonRelease(i);
+        }
         button.pressedAtMs = 0;
         button.editHoldHandled = false;
+        button.presetToggleHandled = false;
       }
     }
 
     if (!editMode &&
+        deviceConfig.settings.holdToEditEnabled &&
         button.stablePressed &&
         !button.editHoldHandled &&
+        !button.presetToggleHandled &&
         button.pressedAtMs > 0 &&
         now - button.pressedAtMs >= EDIT_HOLD_MS) {
       button.editHoldHandled = true;

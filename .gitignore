@@ -1,5 +1,30 @@
-*.zip
-*.uf2
+# OS and editor noise
 .DS_Store
 Thumbs.db
+
+# Codex workspace metadata
+.agents/
+.codex/
+
+# Local dependency/runtime caches
+.tmp-pydeps/
+node_modules/
+
+# Arduino and firmware build outputs
+**/build/
+tmp/
+tmp_flash/
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+
+# Generated web/manual output
+webconfig/dist/
+output/
+
+# Local restore/export archives
+*.zip
+milestones/
 reference_milestone_003/

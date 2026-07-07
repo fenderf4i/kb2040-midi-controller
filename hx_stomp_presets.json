@@ -8,24 +8,6 @@
   ],
   "presets": [
     {
-      "sourceRow": 2,
-      "section": "Expression Pedal",
-      "cc": 1,
-      "value": "0-127",
-      "function": "EP1",
-      "valueMode": "variable",
-      "notes": "Analog"
-    },
-    {
-      "sourceRow": 3,
-      "section": "Expression Pedal",
-      "cc": 2,
-      "value": "0-127",
-      "function": "EP2",
-      "valueMode": "variable",
-      "notes": "Analog"
-    },
-    {
       "sourceRow": 4,
       "section": "FS Assign",
       "cc": 49,

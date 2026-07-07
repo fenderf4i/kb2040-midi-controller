@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f5">
+  <title>MIDI Controller</title>
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("kb2040-webconfig-theme") || "light";
+    } catch (_) {
+      document.documentElement.dataset.theme = "light";
+    }
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="device-mark" aria-hidden="true">MIDI</span>
+      <div>
+        <h1 id="device-title">MIDI Controller</h1>
+        <div class="connection-line">
+          <span id="connection-dot" class="connection-dot"></span>
+          <span id="connection-status">Connecting</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <fieldset class="theme-field header-theme">
+        <legend class="visually-hidden">Appearance</legend>
+        <div class="segmented-control">
+          <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+          <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+          <label><input type="radio" name="theme" value="black"><span>Black</span></label>
+        </div>
+      </fieldset>
+      <button id="reload-device" class="icon-command" type="button" title="Reload from device" aria-label="Reload from device">
+        <span aria-hidden="true">&#8635;</span>
+      </button>
+      <button id="save-button" class="primary-command" type="button">Save &amp; restart</button>
+    </div>
+  </header>
+
+  <div class="preset-context">
+    <label class="preset-selector">
+      <span>Editing preset</span>
+      <select id="preset-selector"></select>
+    </label>
+    <button id="set-active-preset" class="secondary-command" type="button">Set active</button>
+    <span id="active-preset-label" class="active-preset-label"></span>
+  </div>
+
+  <div id="validation-panel" class="validation-panel" role="status" aria-live="polite" hidden></div>
+
+  <nav class="tabs" aria-label="Configuration sections">
+    <button class="tab is-active" type="button" data-tab="presets">Presets</button>
+    <button class="tab" type="button" data-tab="assignments">Device Profiles</button>
+    <button class="tab" type="button" data-tab="buttons">Stomp switches</button>
+    <button class="tab" type="button" data-tab="device">Device</button>
+  </nav>
+
+  <main>
+    <section id="presets-panel" class="panel is-active" data-panel="presets">
+      <div class="section-heading">
+        <div>
+          <h2>Pedal presets</h2>
+          <span id="preset-count" class="record-count"></span>
+        </div>
+        <button id="add-preset" class="add-command" type="button">
+          <span aria-hidden="true">+</span> Add preset
+        </button>
+      </div>
+      <div id="preset-list" class="preset-list"></div>
+      <div class="device-actions-panel preset-toggle-panel">
+        <div>
+          <h3>Preset page toggle</h3>
+          <p>Reserve one stomp switch to flip between two presets without sending MIDI.</p>
+        </div>
+        <div class="form-grid preset-toggle-grid">
+          <fieldset class="theme-field">
+            <legend>Preset toggle</legend>
+            <div class="segmented-control two-option-control">
+              <label><input type="radio" name="preset-toggle-enabled" value="off"><span>Off</span></label>
+              <label><input type="radio" name="preset-toggle-enabled" value="on"><span>On</span></label>
+            </div>
+          </fieldset>
+          <label class="field compact-field">
+            <span>Primary preset</span>
+            <select id="preset-toggle-primary"></select>
+          </label>
+          <label class="field compact-field">
+            <span>Alternate preset</span>
+            <select id="preset-toggle-alternate"></select>
+          </label>
+          <label class="field compact-field">
+            <span>Toggle switch</span>
+            <select id="preset-toggle-switch"></select>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section id="assignments-panel" class="panel" data-panel="assignments">
+      <div class="section-heading">
+        <div>
+          <h2>Device Profiles</h2>
+          <span id="profile-count" class="record-count"></span>
+        </div>
+        <button id="add-profile" class="add-command" type="button">
+          <span aria-hidden="true">+</span> Add profile
+        </button>
+      </div>
+      <div class="profile-editor">
+        <aside id="profile-list" class="profile-list" aria-label="Device Profiles"></aside>
+        <div class="profile-detail">
+          <div class="form-grid profile-grid">
+            <label class="field">
+              <span>Profile name</span>
+              <input id="profile-name" maxlength="24" autocomplete="off">
+            </label>
+            <label class="field compact-field">
+              <span>MIDI channel</span>
+              <select id="profile-channel"></select>
+            </label>
+            <fieldset class="theme-field pc-display-field">
+              <legend>Program Change display</legend>
+              <div class="segmented-control two-option-control">
+                <label><input type="radio" name="profile-pc-display-mode" value="zeroBased"><span>0-127</span></label>
+                <label><input type="radio" name="profile-pc-display-mode" value="oneBased"><span>1-128</span></label>
+              </div>
+            </fieldset>
+            <div class="profile-actions">
+              <button id="duplicate-profile" class="secondary-command" type="button">Duplicate</button>
+              <button id="remove-profile" class="danger-command" type="button">Remove</button>
+            </div>
+          </div>
+          <div class="section-heading subheading">
+            <div>
+              <h2>Commands</h2>
+              <span id="command-count" class="record-count"></span>
+            </div>
+            <button id="add-command" class="add-command" type="button">
+              <span aria-hidden="true">+</span> Add command
+            </button>
+          </div>
+          <div class="table-shell">
+            <table class="assignment-table">
+              <thead>
+                <tr>
+                  <th scope="col">Message</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Display label</th>
+                  <th scope="col">Number</th>
+                  <th scope="col">Values</th>
+                  <th scope="col" class="actions-heading">Remove</th>
+                </tr>
+              </thead>
+              <tbody id="command-rows"></tbody>
+            </table>
+          </div>
+          <div class="device-actions-panel profile-file-panel">
+            <div>
+              <h3>Device Profile files</h3>
+              <p>Share command libraries without changing presets, pins, or device settings.</p>
+            </div>
+            <div class="device-actions">
+              <button id="import-profiles" class="secondary-command" type="button">Import profiles</button>
+              <button id="export-profiles" class="secondary-command" type="button">Export profiles</button>
+              <input id="profile-import-file" type="file" accept="application/json,.json" hidden>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="buttons-panel" class="panel" data-panel="buttons">
+      <div class="section-heading">
+        <h2>Stomp switches</h2>
+      </div>
+      <div id="button-grid" class="button-grid"></div>
+    </section>
+
+    <section id="device-panel" class="panel" data-panel="device">
+      <div class="section-heading">
+        <h2>Device</h2>
+      </div>
+      <div class="form-grid device-grid hardware-grid">
+        <label class="field">
+          <span>Device name</span>
+          <input id="device-name" maxlength="32" autocomplete="off">
+        </label>
+        <div class="field compact-field stomp-count-field">
+          <span>Stomp switches</span>
+          <div class="button-stepper">
+            <button id="remove-stomp-switch" class="row-icon" type="button" title="Remove stomp switch">-</button>
+            <input id="button-count" type="number" min="1" max="6" inputmode="numeric">
+            <button id="add-stomp-switch" class="row-icon" type="button" title="Add stomp switch">+</button>
+          </div>
+        </div>
+      </div>
+      <div id="hardware-buttons" class="button-grid"></div>
+      <div class="form-grid menu-control-grid">
+        <fieldset class="theme-field menu-mode-field">
+          <legend>Menu controls</legend>
+          <div class="segmented-control">
+            <label><input type="radio" name="menu-mode" value="twoButton"><span>Two buttons</span></label>
+            <label><input type="radio" name="menu-mode" value="encoder"><span>Encoder</span></label>
+            <label><input type="radio" name="menu-mode" value="stemmaQtEncoder"><span>STEMMA QT</span></label>
+          </div>
+        </fieldset>
+        <label class="field compact-field menu-pin-field menu-pin-a menu-two-button-field">
+          <span>Previous pin</span>
+          <select id="previous-button-pin" data-pin-role="previousButtonPin"></select>
+        </label>
+        <label class="field compact-field menu-pin-field menu-pin-b menu-two-button-field">
+          <span>Next pin</span>
+          <select id="next-button-pin" data-pin-role="nextButtonPin"></select>
+        </label>
+        <label class="field compact-field menu-pin-field menu-pin-a menu-encoder-field">
+          <span>GPIO encoder A</span>
+          <select id="encoder-a-pin" data-pin-role="encoderAPin"></select>
+        </label>
+        <label class="field compact-field menu-pin-field menu-pin-b menu-encoder-field">
+          <span>GPIO encoder B</span>
+          <select id="encoder-b-pin" data-pin-role="encoderBPin"></select>
+        </label>
+        <label class="field compact-field menu-pin-field menu-pin-c menu-encoder-field">
+          <span>GPIO encoder switch</span>
+          <select id="encoder-switch-pin" data-pin-role="encoderSwitchPin"></select>
+        </label>
+        <label class="field compact-field menu-pin-field menu-pin-d menu-qt-encoder-field">
+          <span>QT interrupt</span>
+          <select id="qt-encoder-interrupt-pin" data-pin-role="qtEncoderInterruptPin"></select>
+        </label>
+      </div>
+      <div class="form-grid device-grid settings-grid">
+        <fieldset class="theme-field">
+          <legend>Hold stomp switch to edit</legend>
+          <div class="segmented-control two-option-control">
+            <label><input type="radio" name="hold-edit-mode" value="off"><span>Off</span></label>
+            <label><input id="hold-to-edit-enabled" type="radio" name="hold-edit-mode" value="on"><span>On</span></label>
+          </div>
+        </fieldset>
+        <label class="field compact-field">
+          <span>Return home after</span>
+          <div class="input-with-unit">
+            <input id="button-screen-seconds" type="number" min="1" max="30" inputmode="numeric">
+            <span class="input-unit">seconds</span>
+          </div>
+        </label>
+        <fieldset class="theme-field">
+          <legend>MIDI output</legend>
+          <div class="segmented-control">
+            <label><input type="radio" name="midi-output-mode" value="both"><span>Both</span></label>
+            <label><input type="radio" name="midi-output-mode" value="din"><span>DIN</span></label>
+            <label><input type="radio" name="midi-output-mode" value="usb"><span>USB</span></label>
+          </div>
+        </fieldset>
+      </div>
+      <div class="device-actions-panel">
+        <div>
+          <h3>Configuration file</h3>
+          <p>Move saved settings between this browser and a JSON file.</p>
+        </div>
+        <div class="device-actions">
+          <button id="import-button" class="secondary-command" type="button">Import JSON</button>
+          <button id="export-button" class="secondary-command" type="button">Export JSON</button>
+          <button id="firmware-update" class="secondary-command" type="button">Enter firmware update mode</button>
+          <button id="factory-reset" class="danger-command" type="button">Restore to default settings</button>
+          <input id="import-file" type="file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

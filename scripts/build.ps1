@@ -1,5 +1,5 @@
 param(
-  [string]$Fqbn = "rp2040:rp2040:adafruit_kb2040:usbstack=tinyusb",
+  [string]$Fqbn = "rp2040:rp2040:adafruit_kb2040:flash=8388608_524288",
   [string]$Sketch = "KB2040MIDIController"
 )
 
@@ -19,4 +19,5 @@ if ($arduinoCli) {
   $arduinoCliPath = $defaultPath
 }
 
+& "$PSScriptRoot\..\webconfig\build.ps1"
 & $arduinoCliPath compile --fqbn $Fqbn $Sketch
