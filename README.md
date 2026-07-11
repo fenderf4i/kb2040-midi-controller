@@ -70,6 +70,9 @@ pins used here. For example, sketch pin `4` is GPIO4 / the board pad labeled
 - One preset page toggle can reserve a stomp switch to flip between two selected
   presets while performing. The toggle changes the active page in RAM and sends
   no MIDI.
+- Web Config macros can group multiple Device Profile commands into a reusable
+  ordered sequence, with an optional delay after each step. A stomp switch can
+  target either a single command or a macro.
 - Device Profiles support up to `40` commands and no longer depend on the
   source spreadsheet. Commands can be inserted, removed, renamed, and configured
   as MIDI CC or Program Change messages in the browser.
@@ -89,6 +92,9 @@ output is suppressed while the menu is open.
 The menu provides:
 
 - Preset selection
+- Preset page toggle setup under `Presets > Page Toggle`, including enable or
+  disable, primary preset, alternate preset, and the reserved toggle switch
+- Macro setup under `Macros`, including ordered command steps and per-step delay
 - Assignment selection for all configured stomp switches, up to six
 - Global hold-to-edit enable or disable
 - MIDI output routing: USB and DIN, DIN only, or USB only

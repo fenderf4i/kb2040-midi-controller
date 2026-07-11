@@ -7,6 +7,9 @@ constexpr uint8_t MAX_STOMP_SWITCH_COUNT = 6;
 constexpr uint8_t DEFAULT_BUTTON_COUNT = 6;
 constexpr uint8_t LEGACY_BUTTON_COUNT = 6;
 constexpr uint8_t MAX_ASSIGNMENTS = 40;
+constexpr uint8_t MAX_MACROS = 16;
+constexpr uint8_t MAX_MACRO_STEPS = 8;
+constexpr uint16_t MAX_MACRO_STEP_DELAY_MS = 1000;
 constexpr uint8_t MAX_DEVICE_PROFILES = 8;
 constexpr uint8_t MAX_PRESETS = 8;
 constexpr uint8_t ASSIGNMENT_LABEL_LENGTH = 21;
@@ -78,10 +81,23 @@ struct ButtonAssignmentRef {
   uint16_t assignmentId;
 };
 
+struct MacroStepConfig {
+  ButtonAssignmentRef command;
+  uint16_t delayAfterMs;
+};
+
+struct MacroConfig {
+  uint16_t id;
+  char name[PRESET_NAME_LENGTH];
+  uint8_t stepCount;
+  MacroStepConfig steps[MAX_MACRO_STEPS];
+};
+
 struct PedalPresetConfig {
   uint16_t id;
   char name[PRESET_NAME_LENGTH];
   ButtonAssignmentRef buttonAssignments[MAX_BUTTON_COUNT];
+  uint16_t buttonMacroIds[MAX_BUTTON_COUNT];
 };
 
 struct HardwareConfig {
@@ -117,6 +133,8 @@ struct DeviceConfigPayload {
   uint16_t activePresetId;
   uint8_t profileCount;
   DeviceProfileConfig profiles[MAX_DEVICE_PROFILES];
+  uint8_t macroCount;
+  MacroConfig macros[MAX_MACROS];
   uint8_t presetCount;
   PedalPresetConfig presets[MAX_PRESETS];
 };
@@ -142,6 +160,8 @@ class DeviceConfigStore {
   static const PedalPresetConfig *findPreset(const DeviceConfigPayload &config, uint16_t id);
   static DeviceProfileConfig *findProfile(DeviceConfigPayload &config, uint16_t id);
   static const DeviceProfileConfig *findProfile(const DeviceConfigPayload &config, uint16_t id);
+  static MacroConfig *findMacro(DeviceConfigPayload &config, uint16_t id);
+  static const MacroConfig *findMacro(const DeviceConfigPayload &config, uint16_t id);
   static AssignmentConfig *findAssignment(DeviceProfileConfig &profile, uint16_t id);
   static const AssignmentConfig *findAssignment(const DeviceProfileConfig &profile, uint16_t id);
   static const AssignmentConfig *findAssignment(const DeviceConfigPayload &config,

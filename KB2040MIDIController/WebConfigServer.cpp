@@ -345,7 +345,7 @@ void WebConfigServer::serializeConfig(const DeviceConfigPayload &config, String 
   output = "";
   output.reserve(4096 + config.profileCount * 4096 + config.presetCount * 1024);
 
-  output += "{\"schemaVersion\":12,\"device\":{\"name\":";
+  output += "{\"schemaVersion\":13,\"device\":{\"name\":";
   appendJsonString(output, config.deviceName);
   output += ",\"activePresetId\":";
   appendJsonNumber(output, config.activePresetId);
@@ -420,6 +420,29 @@ void WebConfigServer::serializeConfig(const DeviceConfigPayload &config, String 
     output += "]}";
   }
 
+  output += "],\"macros\":[";
+  for (uint8_t m = 0; m < config.macroCount; ++m) {
+    if (m > 0) output += ',';
+    const MacroConfig &macro = config.macros[m];
+    output += "{\"id\":";
+    appendJsonNumber(output, macro.id);
+    output += ",\"name\":";
+    appendJsonString(output, macro.name);
+    output += ",\"steps\":[";
+    for (uint8_t s = 0; s < macro.stepCount; ++s) {
+      if (s > 0) output += ',';
+      const MacroStepConfig &step = macro.steps[s];
+      output += "{\"deviceProfileId\":";
+      appendJsonNumber(output, step.command.profileId);
+      output += ",\"commandId\":";
+      appendJsonNumber(output, step.command.assignmentId);
+      output += ",\"delayAfterMs\":";
+      appendJsonNumber(output, step.delayAfterMs);
+      output += '}';
+    }
+    output += "]}";
+  }
+
   output += "],\"presets\":[";
   for (uint8_t p = 0; p < config.presetCount; ++p) {
     if (p > 0) output += ',';
@@ -442,6 +465,11 @@ void WebConfigServer::serializeConfig(const DeviceConfigPayload &config, String 
       appendJsonNumber(output, sourcePreset.buttonAssignments[i].profileId);
       output += ",\"commandId\":";
       appendJsonNumber(output, sourcePreset.buttonAssignments[i].assignmentId);
+      output += ",\"assignmentType\":";
+      appendJsonString(output,
+                       sourcePreset.buttonMacroIds[i] != UNASSIGNED_ID ? "macro" : "command");
+      output += ",\"macroId\":";
+      appendJsonNumber(output, sourcePreset.buttonMacroIds[i]);
       output += '}';
     }
 
@@ -466,12 +494,14 @@ bool WebConfigServer::parseConfig(const String &body,
   JsonObjectConst settings = document["settings"];
   JsonObjectConst presetToggle = document["presetToggle"];
   JsonArrayConst profiles = document["deviceProfiles"];
+  JsonArrayConst macros = document["macros"];
   JsonArrayConst presets = document["presets"];
   if (device.isNull() || profiles.isNull() || presets.isNull()) {
     error = "Missing configuration section";
     return false;
   }
   if (profiles.size() == 0 || profiles.size() > MAX_DEVICE_PROFILES ||
+      (!macros.isNull() && macros.size() > MAX_MACROS) ||
       presets.size() == 0 || presets.size() > MAX_PRESETS ||
       !jsonIntegerInRange(device["activePresetId"], 1, 65535)) {
     error = "Invalid profile, preset, or active preset count";
@@ -484,6 +514,7 @@ bool WebConfigServer::parseConfig(const String &body,
                device["name"] | "MIDI Controller");
   candidate.activePresetId = device["activePresetId"].as<uint16_t>();
   candidate.profileCount = profiles.size();
+  candidate.macroCount = macros.isNull() ? 0 : macros.size();
   candidate.presetCount = presets.size();
   DeviceConfigStore::loadDefaultHardware(candidate.hardware);
   candidate.settings.holdToEditEnabled = false;
@@ -611,6 +642,38 @@ bool WebConfigServer::parseConfig(const String &body,
     }
   }
 
+  uint8_t macroIndex = 0;
+  if (!macros.isNull()) {
+    for (JsonObjectConst sourceMacro : macros) {
+      JsonArrayConst steps = sourceMacro["steps"];
+      if (steps.isNull() || steps.size() == 0 || steps.size() > MAX_MACRO_STEPS ||
+          !jsonIntegerInRange(sourceMacro["id"], 1, 65535)) {
+        error = "Invalid macro configuration";
+        return false;
+      }
+
+      MacroConfig &targetMacro = candidate.macros[macroIndex++];
+      targetMacro.id = sourceMacro["id"].as<uint16_t>();
+      targetMacro.stepCount = steps.size();
+      copyJsonText(targetMacro.name, sizeof(targetMacro.name), sourceMacro["name"] | "Macro");
+
+      uint8_t stepIndex = 0;
+      for (JsonObjectConst sourceStep : steps) {
+        if (!jsonIntegerInRange(sourceStep["deviceProfileId"], 1, 65535) ||
+            !jsonIntegerInRange(sourceStep["commandId"], 1, 65535) ||
+            !jsonIntegerInRange(sourceStep["delayAfterMs"], 0, MAX_MACRO_STEP_DELAY_MS)) {
+          error = "Invalid macro step";
+          return false;
+        }
+        MacroStepConfig &targetStep = targetMacro.steps[stepIndex++];
+        targetStep.command = {
+            sourceStep["deviceProfileId"].as<uint16_t>(),
+            sourceStep["commandId"].as<uint16_t>()};
+        targetStep.delayAfterMs = sourceStep["delayAfterMs"].as<uint16_t>();
+      }
+    }
+  }
+
   uint8_t presetIndex = 0;
   for (JsonObjectConst sourcePreset : presets) {
     JsonArrayConst buttons = sourcePreset["buttons"];
@@ -629,14 +692,20 @@ bool WebConfigServer::parseConfig(const String &body,
       JsonVariantConst commandId = source["commandId"].isNull()
                                        ? source["assignmentId"]
                                        : source["commandId"];
+      JsonVariantConst macroId = source["macroId"];
       if (!jsonIntegerInRange(source["deviceProfileId"], 0, 65535) ||
-          !jsonIntegerInRange(commandId, 0, 65535)) {
+          !jsonIntegerInRange(commandId, 0, 65535) ||
+          (!macroId.isNull() && !jsonIntegerInRange(macroId, 0, 65535))) {
         error = "Invalid button command";
         return false;
       }
       targetPreset.buttonAssignments[buttonIndex++] = {
           source["deviceProfileId"].as<uint16_t>(),
           commandId.as<uint16_t>()};
+      targetPreset.buttonMacroIds[buttonIndex - 1] =
+          strcmp(source["assignmentType"] | "command", "macro") == 0 && !macroId.isNull()
+              ? macroId.as<uint16_t>()
+              : UNASSIGNED_ID;
     }
   }
 

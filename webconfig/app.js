@@ -1,4 +1,7 @@
 const MAX_COMMANDS = 40;
+const MAX_MACROS = 16;
+const MAX_MACRO_STEPS = 8;
+const MAX_MACRO_DELAY_MS = 1000;
 const MAX_DEVICE_PROFILES = 8;
 const MAX_PRESETS = 8;
 const MAX_BUTTONS = 6;
@@ -7,8 +10,11 @@ const MAX_PRESET_NAME_LENGTH = 24;
 const MAX_DEVICE_NAME_LENGTH = 32;
 const THEME_STORAGE_KEY = "kb2040-webconfig-theme";
 const DRAFT_STORAGE_KEY = "kb2040-webconfig-draft";
+const DRAFT_STORAGE_VERSION = 2;
 const DEVICE_CONFIG_LOAD_ATTEMPTS = 8;
 const DEVICE_CONFIG_RETRY_DELAY_MS = 1250;
+const DEVICE_RECONNECT_DELAY_MS = 3000;
+const SAVE_DEVICE_BUTTON_LABEL = "Save to device";
 const SAVE_BUTTON_LABEL = "Save & restart";
 const THEMES = new Set(["light", "dark", "black"]);
 const OUTPUT_MODES = new Set(["both", "usb", "din"]);
@@ -87,7 +93,7 @@ const HX_STOMP_COMMANDS = [
 ];
 
 const EMBEDDED_DEFAULT_CONFIG = {
-  schemaVersion: 12,
+  schemaVersion: 13,
   device: { name: "MIDI Controller", activePresetId: 1 },
   hardware: {
     buttonCount: 6,
@@ -120,6 +126,7 @@ const EMBEDDED_DEFAULT_CONFIG = {
     programChangeDisplayMode: "zeroBased",
     commands: HX_STOMP_COMMANDS
   }],
+  macros: [],
   presets: [{
     id: 1,
     name: "HX Stomp",
@@ -139,8 +146,12 @@ let defaults = null;
 let connected = false;
 let editingPresetId = 0;
 let editingProfileId = 0;
+let editingMacroId = 0;
 let toastTimer = null;
 let saveInProgress = false;
+let deviceReconnectTimer = null;
+let deviceReconnectInProgress = false;
+let draftDirty = false;
 
 function applyTheme(theme, persist = true) {
   const selectedTheme = THEMES.has(theme) ? theme : "light";
@@ -183,9 +194,38 @@ function showToast(message) {
 
 function setConnection(isConnected, label) {
   connected = isConnected;
+  if (isConnected) clearDeviceReconnect();
   document.querySelector("#connection-dot").classList.toggle("is-connected", isConnected);
   document.querySelector("#connection-status").textContent = label;
   if (config) renderValidation();
+}
+
+function clearDeviceReconnect() {
+  if (!deviceReconnectTimer) return;
+  clearTimeout(deviceReconnectTimer);
+  deviceReconnectTimer = null;
+}
+
+function scheduleDeviceReconnect(delayMs = DEVICE_RECONNECT_DELAY_MS) {
+  if (connected || saveInProgress || deviceReconnectTimer) return;
+  deviceReconnectTimer = setTimeout(() => {
+    deviceReconnectTimer = null;
+    retryDeviceConnection();
+  }, delayMs);
+}
+
+async function retryDeviceConnection() {
+  if (connected || saveInProgress || deviceReconnectInProgress) return;
+  deviceReconnectInProgress = true;
+  try {
+    setConnection(false, "Retrying device");
+    await loadConfigFromDevice({ notifyDraft: false });
+    showToast(draftDirty ? "Device reconnected. Browser draft kept." : "Loaded from device");
+  } catch {
+    setConnection(false, "Waiting for device");
+  }
+  deviceReconnectInProgress = false;
+  if (!connected) scheduleDeviceReconnect();
 }
 
 function channelOptions(selectedChannel) {
@@ -273,6 +313,44 @@ function isValidCommandRef(refs, profileId, commandId) {
   return profileId > 0 && commandId > 0 && refs.get(profileId)?.has(commandId);
 }
 
+function validMacroIds(macros) {
+  return new Set(macros.map((macro) => macro.id));
+}
+
+function isValidMacroId(macros, macroId) {
+  return macroId > 0 && validMacroIds(macros).has(macroId);
+}
+
+function normalizeMacroStep(step, refs) {
+  const profileId = clampNumber(step?.deviceProfileId ?? step?.profileId, 0, 65535, 0);
+  const commandId = clampNumber(step?.commandId ?? step?.assignmentId, 0, 65535, 0);
+  return {
+    deviceProfileId: isValidCommandRef(refs, profileId, commandId) ? profileId : 0,
+    commandId: isValidCommandRef(refs, profileId, commandId) ? commandId : 0,
+    delayAfterMs: clampNumber(step?.delayAfterMs, 0, MAX_MACRO_DELAY_MS, 0)
+  };
+}
+
+function normalizeMacro(macro, index, profiles) {
+  const refs = validCommandRefs(profiles);
+  const steps = Array.isArray(macro?.steps)
+    ? macro.steps.slice(0, MAX_MACRO_STEPS).map((step) => normalizeMacroStep(step, refs)).filter((step) => step.deviceProfileId && step.commandId)
+    : [];
+  const fallbackProfile = profiles[0];
+  if (!steps.length && fallbackProfile?.commands?.[0]) {
+    steps.push({
+      deviceProfileId: fallbackProfile.id,
+      commandId: fallbackProfile.commands[0].id,
+      delayAfterMs: 0
+    });
+  }
+  return {
+    id: clampNumber(macro?.id, 1, 65535, index + 1),
+    name: String(macro?.name || `Macro ${index + 1}`).slice(0, MAX_PRESET_NAME_LENGTH),
+    steps
+  };
+}
+
 function migrateLegacyConfig(input) {
   const source = clone(input || {});
   if (Array.isArray(source.deviceProfiles)) return source;
@@ -340,8 +418,9 @@ function migrateLegacyConfig(input) {
   return source;
 }
 
-function normalizePreset(source, index, hardware, profiles) {
+function normalizePreset(source, index, hardware, profiles, macros = []) {
   const refs = validCommandRefs(profiles);
+  const macroIds = validMacroIds(macros);
   const preset = {
     id: clampNumber(source?.id, 1, 65535, index + 1),
     name: String(source?.name || `Preset ${index + 1}`).slice(0, MAX_PRESET_NAME_LENGTH),
@@ -353,15 +432,22 @@ function normalizePreset(source, index, hardware, profiles) {
     const fallbackProfileId = profiles[0]?.id || 0;
     const profileId = clampNumber(button.deviceProfileId ?? button.profileId, 0, 65535, 0);
     const commandId = clampNumber(button.commandId ?? button.assignmentId, 0, 65535, 0);
+    const macroId = clampNumber(button.macroId, 0, 65535, 0);
     const legacyCommandProfile = profileId === 0 && commandId > 0 && refs.get(fallbackProfileId)?.has(commandId)
       ? fallbackProfileId
       : profileId;
     const valid = isValidCommandRef(refs, legacyCommandProfile, commandId);
+    const macroValid = macroIds.has(macroId);
+    const assignmentType = (button.assignmentType === "macro" || button.targetType === "macro") && macroValid
+      ? "macro"
+      : "command";
     return {
       number: buttonIndex + 1,
       pin: pinLabel(hardware.buttonPins[buttonIndex]),
       deviceProfileId: valid ? legacyCommandProfile : 0,
-      commandId: valid ? commandId : 0
+      commandId: valid ? commandId : 0,
+      assignmentType,
+      macroId: macroValid ? macroId : 0
     };
   });
   return preset;
@@ -401,7 +487,7 @@ function normalizeConfig(candidate) {
   });
 
   const result = {
-    schemaVersion: 12,
+    schemaVersion: 13,
     device: {
       name: String(source.device?.name || "MIDI Controller").slice(0, MAX_DEVICE_NAME_LENGTH),
       activePresetId: clampNumber(source.device?.activePresetId, 1, 65535, 1)
@@ -409,11 +495,21 @@ function normalizeConfig(candidate) {
     hardware,
     settings: normalizeSettings(source.settings),
     deviceProfiles: profiles,
-    presets: Array.isArray(source.presets)
-      ? source.presets.slice(0, MAX_PRESETS).map((preset, index) => normalizePreset(preset, index, hardware, profiles))
-      : []
+    macros: [],
+    presets: []
   };
-  if (!result.presets.length) result.presets = [normalizePreset(EMBEDDED_DEFAULT_CONFIG.presets[0], 0, hardware, profiles)];
+  result.macros = Array.isArray(source.macros)
+    ? source.macros.slice(0, MAX_MACROS).map((macro, index) => normalizeMacro(macro, index, profiles))
+    : [];
+  const usedMacroIds = new Set();
+  result.macros.forEach((macro) => {
+    while (usedMacroIds.has(macro.id)) macro.id += 1;
+    usedMacroIds.add(macro.id);
+  });
+  result.presets = Array.isArray(source.presets)
+    ? source.presets.slice(0, MAX_PRESETS).map((preset, index) => normalizePreset(preset, index, hardware, profiles, result.macros))
+    : [];
+  if (!result.presets.length) result.presets = [normalizePreset(EMBEDDED_DEFAULT_CONFIG.presets[0], 0, hardware, profiles, result.macros)];
   const usedPresetIds = new Set();
   result.presets.forEach((preset) => {
     while (usedPresetIds.has(preset.id)) preset.id += 1;
@@ -494,6 +590,30 @@ function validateConfigDraft(candidate = config) {
     });
   });
 
+  const seenMacros = new Map();
+  candidate.macros.forEach((macro) => {
+    if (seenMacros.has(macro.id)) blocking.push(`Duplicate Macro ID ${macro.id}`);
+    seenMacros.set(macro.id, macro);
+    if (!macro.steps.length) blocking.push(`${macro.name} needs at least one step`);
+    macro.steps.forEach((step, index) => {
+      if (!isValidCommandRef(validCommandRefs(candidate.deviceProfiles), step.deviceProfileId, step.commandId)) {
+        blocking.push(`${macro.name} step ${index + 1} references a missing command`);
+      }
+      if (step.delayAfterMs < 0 || step.delayAfterMs > MAX_MACRO_DELAY_MS) {
+        blocking.push(`${macro.name} step ${index + 1} delay is out of range`);
+      }
+    });
+  });
+
+  const macroIds = validMacroIds(candidate.macros);
+  candidate.presets.forEach((preset) => {
+    preset.buttons.forEach((button) => {
+      if (button.assignmentType === "macro" && !macroIds.has(button.macroId)) {
+        blocking.push(`${preset.name} switch ${button.number} references a missing macro`);
+      }
+    });
+  });
+
   if (candidate.presetToggle?.enabled) {
     const presetIds = new Set(candidate.presets.map((preset) => preset.id));
     if (candidate.presets.length < 2) {
@@ -518,6 +638,7 @@ function validateConfigDraft(candidate = config) {
 }
 
 function currentPreset() {
+  ensureEditingTargetsValid();
   return config.presets.find((preset) => preset.id === editingPresetId) || config.presets[0];
 }
 
@@ -525,11 +646,24 @@ function presetById(id) {
   return config.presets.find((preset) => preset.id === Number(id));
 }
 
+function ensureEditingTargetsValid() {
+  if (!presetById(editingPresetId)) {
+    editingPresetId = presetById(config.device.activePresetId)?.id || config.presets[0]?.id || 0;
+  }
+  if (!findProfile(editingProfileId)) {
+    editingProfileId = config.deviceProfiles[0]?.id || 0;
+  }
+  if (!findMacro(editingMacroId)) {
+    editingMacroId = config.macros[0]?.id || 0;
+  }
+}
+
 function ensurePresetToggleValid() {
   config.presetToggle = normalizePresetToggle(config.presetToggle, config.presets, config.hardware);
 }
 
 function currentProfile() {
+  ensureEditingTargetsValid();
   return config.deviceProfiles.find((profile) => profile.id === editingProfileId) || config.deviceProfiles[0];
 }
 
@@ -539,6 +673,15 @@ function findProfile(id) {
 
 function findCommand(profileId, commandId) {
   return findProfile(profileId)?.commands.find((command) => command.id === Number(commandId));
+}
+
+function currentMacro() {
+  ensureEditingTargetsValid();
+  return config.macros.find((macro) => macro.id === editingMacroId) || config.macros[0] || null;
+}
+
+function findMacro(id) {
+  return config.macros.find((macro) => macro.id === Number(id));
 }
 
 function presetSelectOptions(selectedId) {
@@ -589,6 +732,10 @@ function nextProfileId() {
   return config.deviceProfiles.reduce((highest, profile) => Math.max(highest, profile.id), 0) + 1;
 }
 
+function nextMacroId() {
+  return config.macros.reduce((highest, macro) => Math.max(highest, macro.id), 0) + 1;
+}
+
 function nextCommandId(profile = currentProfile()) {
   return profile.commands.reduce((highest, command) => Math.max(highest, command.id), 0) + 1;
 }
@@ -607,6 +754,28 @@ function createProfile() {
   }, config.deviceProfiles.length);
 }
 
+function createMacro() {
+  const fallbackProfile = config.deviceProfiles[0];
+  const fallbackCommand = fallbackProfile?.commands?.[0];
+  return normalizeMacro({
+    id: nextMacroId(),
+    name: `Macro ${config.macros.length + 1}`,
+    steps: fallbackProfile && fallbackCommand
+      ? [{ deviceProfileId: fallbackProfile.id, commandId: fallbackCommand.id, delayAfterMs: 0 }]
+      : []
+  }, config.macros.length, config.deviceProfiles);
+}
+
+function createMacroStep() {
+  const profile = currentProfile() || config.deviceProfiles[0];
+  const command = profile?.commands?.[0];
+  return {
+    deviceProfileId: profile?.id || 0,
+    commandId: command?.id || 0,
+    delayAfterMs: 0
+  };
+}
+
 function createPreset() {
   const id = nextPresetId();
   return normalizePreset({
@@ -616,32 +785,82 @@ function createPreset() {
       number: index + 1,
       pin: pinLabel(config.hardware.buttonPins[index]),
       deviceProfileId: 0,
-      commandId: 0
+      commandId: 0,
+      assignmentType: "command",
+      macroId: 0
     }))
-  }, config.presets.length, config.hardware, config.deviceProfiles);
+  }, config.presets.length, config.hardware, config.deviceProfiles, config.macros);
+}
+
+function configsMatch(left, right) {
+  try {
+    return JSON.stringify(normalizeConfig(clone(left))) === JSON.stringify(normalizeConfig(clone(right)));
+  } catch {
+    return false;
+  }
+}
+
+function readStoredDraft() {
+  try {
+    const stored = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    if (parsed?.version === DRAFT_STORAGE_VERSION && parsed.config) {
+      return {
+        config: normalizeConfig(parsed.config),
+        dirty: Boolean(parsed.dirty),
+        updatedAt: Number(parsed.updatedAt) || 0
+      };
+    }
+    return { config: normalizeConfig(parsed), dirty: true, updatedAt: 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredDraft(dirty) {
+  localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({
+    version: DRAFT_STORAGE_VERSION,
+    dirty,
+    updatedAt: Date.now(),
+    config: normalizeConfig(config)
+  }));
+  draftDirty = dirty;
 }
 
 function persistDraft() {
-  localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(config));
+  writeStoredDraft(true);
+  if (connected) document.querySelector("#connection-status").textContent = "Configuration mode - unsaved";
+}
+
+function persistCleanDraft() {
+  writeStoredDraft(false);
 }
 
 function renderAll() {
   ensurePresetToggleValid();
+  ensureEditingTargetsValid();
   renderPresetContext();
   renderPresets();
   renderPresetToggle();
   renderAssignments();
+  renderMacros();
   renderButtons();
   renderDevice();
   renderValidation();
 }
 
 function renderPresetContext() {
+  ensureEditingTargetsValid();
   const selector = document.querySelector("#preset-selector");
-  selector.innerHTML = config.presets.map((preset) =>
-    `<option value="${preset.id}"${preset.id === editingPresetId ? " selected" : ""}>${escapeHtml(preset.name)}</option>`).join("");
+  selector.options.length = 0;
+  config.presets.forEach((preset) => {
+    selector.add(new Option(preset.name, String(preset.id), false, preset.id === editingPresetId));
+  });
+  selector.value = String(editingPresetId);
   const active = config.presets.find((preset) => preset.id === config.device.activePresetId);
-  document.querySelector("#active-preset-label").textContent = `Active: ${active?.name || "Preset"}`;
+  const presetCountLabel = `${config.presets.length} preset${config.presets.length === 1 ? "" : "s"} loaded`;
+  document.querySelector("#active-preset-label").textContent = `Active: ${active?.name || "Preset"} / ${presetCountLabel}`;
   document.querySelector("#set-active-preset").disabled = editingPresetId === config.device.activePresetId;
 }
 
@@ -721,12 +940,56 @@ function renderAssignments() {
       ? `<span class="muted-cell">Not used</span>`
       : `<div class="value-fields${command.type === "fixed" ? " is-single" : ""}"><label class="value-field-wrap"><span>${command.type === "momentary" ? "Press" : command.type === "toggle" ? "On" : "Send"}</span><input class="row-field command-value-on" type="number" min="0" max="127" value="${command.valueOn}"></label>${secondValue}</div>`;
     row.innerHTML = `
+      <td data-label="Display label"><input class="row-field command-label" maxlength="${MAX_LABEL_LENGTH}" value="${escapeHtml(command.label)}"></td>
       <td data-label="Message"><select class="row-field command-message-type">${Object.entries(messageTypes).map(([value, label]) => `<option value="${value}"${command.messageType === value ? " selected" : ""}>${label}</option>`).join("")}</select></td>
       <td data-label="Type"><select class="row-field command-type"${isProgramChange ? " disabled" : ""}>${Object.entries(commandTypes).map(([value, label]) => `<option value="${value}"${command.type === value ? " selected" : ""}>${label}</option>`).join("")}</select></td>
-      <td data-label="Display label"><input class="row-field command-label" maxlength="${MAX_LABEL_LENGTH}" value="${escapeHtml(command.label)}"></td>
       <td data-label="Number"><label class="value-field-wrap"><span>${isProgramChange ? "Program" : "CC"}</span><input class="row-field command-number" type="number" min="${numberMinimum}" max="${numberMaximum}" value="${numberValue}"></label></td>
       <td data-label="Values">${valuesCell}</td>
       <td data-label="Remove"><div class="row-actions"><button class="row-icon remove-command" type="button" title="Remove command"${profile.commands.length === 1 ? " disabled" : ""}>-</button></div></td>`;
+    rows.append(row);
+  });
+}
+
+function renderMacros() {
+  document.querySelector("#macro-count").textContent = `${config.macros.length} of ${MAX_MACROS} macros`;
+  document.querySelector("#add-macro").disabled = config.macros.length >= MAX_MACROS;
+  const macro = currentMacro();
+  const macroList = document.querySelector("#macro-list");
+  macroList.replaceChildren();
+  config.macros.forEach((item) => {
+    const button = document.createElement("button");
+    button.className = `profile-list-item${item.id === macro?.id ? " is-active" : ""}`;
+    button.type = "button";
+    button.dataset.macroId = item.id;
+    button.innerHTML = `<span>${escapeHtml(item.name)}</span><small>${item.steps.length} step${item.steps.length === 1 ? "" : "s"}</small>`;
+    macroList.append(button);
+  });
+
+  const detail = document.querySelector("#macro-detail");
+  const empty = document.querySelector("#macro-empty");
+  if (!macro) {
+    detail.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  detail.hidden = false;
+  empty.hidden = true;
+  document.querySelector("#macro-name").value = macro.name;
+  document.querySelector("#macro-step-count").textContent = `${macro.steps.length} of ${MAX_MACRO_STEPS} steps in ${macro.name}`;
+  document.querySelector("#add-macro-step").disabled = macro.steps.length >= MAX_MACRO_STEPS;
+  document.querySelector("#remove-macro").disabled = config.macros.length === 0;
+
+  const rows = document.querySelector("#macro-step-rows");
+  rows.replaceChildren();
+  macro.steps.forEach((step, index) => {
+    const profile = findProfile(step.deviceProfileId) || config.deviceProfiles[0];
+    const row = document.createElement("tr");
+    row.dataset.stepIndex = String(index);
+    row.innerHTML = `
+      <td data-label="Device Profile"><select class="row-field macro-step-profile">${config.deviceProfiles.map((item) => `<option value="${item.id}"${item.id === profile.id ? " selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></td>
+      <td data-label="Command"><select class="row-field macro-step-command">${profile.commands.map((item) => `<option value="${item.id}"${item.id === step.commandId ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></td>
+      <td data-label="Delay"><label class="unit-field-wrap"><input class="row-field macro-step-delay" type="number" min="0" max="${MAX_MACRO_DELAY_MS}" value="${step.delayAfterMs}"><span>ms</span></label></td>
+      <td data-label="Remove"><div class="row-actions"><button class="row-icon remove-macro-step" type="button" title="Remove step"${macro.steps.length === 1 ? " disabled" : ""}>-</button></div></td>`;
     rows.append(row);
   });
 }
@@ -738,19 +1001,25 @@ function renderButtons() {
   preset.buttons.forEach((button) => {
     const profile = findProfile(button.deviceProfileId);
     const command = findCommand(button.deviceProfileId, button.commandId);
+    const macro = findMacro(button.macroId);
+    const isMacro = button.assignmentType === "macro" && macro;
     const toggleTarget = isPresetToggleButton(preset, button.number) ? presetToggleTargetForPreset(preset) : null;
     const element = document.createElement("article");
     element.className = "button-config";
     element.dataset.buttonNumber = button.number;
     element.innerHTML = toggleTarget ? `
       <div class="button-title"><span class="button-number">Switch ${button.number}</span><span class="pin-label">${escapeHtml(button.pin)}</span></div>
-      <label class="field compact-field"><span>Device Profile</span><select class="button-profile" disabled><option>Preset page toggle</option></select></label>
-      <label class="field compact-field"><span>Command</span><select class="button-command" disabled><option>Switch to ${escapeHtml(toggleTarget.name)}</option></select></label>
+      <label class="field compact-field"><span>Assignment</span><select disabled><option>Preset page toggle</option></select></label>
+      <label class="field compact-field"><span>Target</span><select disabled><option>Switch to ${escapeHtml(toggleTarget.name)}</option></select></label>
       <div class="button-summary">Preset page toggle / no MIDI sent</div>` : `
       <div class="button-title"><span class="button-number">Switch ${button.number}</span><span class="pin-label">${escapeHtml(button.pin)}</span></div>
-      <label class="field compact-field"><span>Device Profile</span><select class="button-profile"><option value="0">Unassigned</option>${config.deviceProfiles.map((item) => `<option value="${item.id}"${item.id === button.deviceProfileId ? " selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      <label class="field compact-field"><span>Command</span><select class="button-command"${profile ? "" : " disabled"}><option value="0">Unassigned</option>${profile ? profile.commands.map((item) => `<option value="${item.id}"${item.id === button.commandId ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("") : ""}</select></label>
-      <div class="button-summary">${profile && command ? commandSummary(profile, command) : "No MIDI message"}</div>`;
+      <label class="field compact-field"><span>Assignment</span><select class="button-assignment-type"><option value="command"${!isMacro ? " selected" : ""}>Command</option><option value="macro"${isMacro ? " selected" : ""}${config.macros.length ? "" : " disabled"}>Macro</option></select></label>
+      ${isMacro ? `
+        <label class="field compact-field"><span>Macro</span><select class="button-macro">${config.macros.map((item) => `<option value="${item.id}"${item.id === button.macroId ? " selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
+        <div class="button-summary">Macro / ${macro.steps.length} step${macro.steps.length === 1 ? "" : "s"}</div>` : `
+        <label class="field compact-field"><span>Device Profile</span><select class="button-profile"><option value="0">Unassigned</option>${config.deviceProfiles.map((item) => `<option value="${item.id}"${item.id === button.deviceProfileId ? " selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
+        <label class="field compact-field"><span>Command</span><select class="button-command"${profile ? "" : " disabled"}><option value="0">Unassigned</option>${profile ? profile.commands.map((item) => `<option value="${item.id}"${item.id === button.commandId ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("") : ""}</select></label>
+        <div class="button-summary">${profile && command ? commandSummary(profile, command) : "No MIDI message"}</div>`}`;
     grid.append(element);
   });
 }
@@ -802,10 +1071,12 @@ function renderDevice() {
 function renderValidation() {
   const panel = document.querySelector("#validation-panel");
   const saveButton = document.querySelector("#save-button");
+  const saveDeviceButton = document.querySelector("#save-device-button");
   document.querySelectorAll(".pin-conflict").forEach((element) => element.classList.remove("pin-conflict"));
   if (!config) {
     panel.hidden = true;
     saveButton.disabled = true;
+    saveDeviceButton.disabled = true;
     return;
   }
 
@@ -818,28 +1089,46 @@ function renderValidation() {
     panel.hidden = true;
     panel.replaceChildren();
     saveButton.disabled = saveInProgress;
+    saveDeviceButton.disabled = saveInProgress;
     return;
   }
 
   panel.hidden = false;
   panel.innerHTML = `<strong>Configuration needs attention</strong><ul>${report.blocking.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul>`;
   saveButton.disabled = true;
+  saveDeviceButton.disabled = true;
 }
 
 function resizePresetButtons() {
   const refs = validCommandRefs(config.deviceProfiles);
+  const macroIds = validMacroIds(config.macros);
   config.presets.forEach((preset) => {
     preset.buttons = Array.from({ length: config.hardware.buttonCount }, (_, index) => {
       const existing = preset.buttons[index] || {};
       const profileId = Number(existing.deviceProfileId);
       const commandId = Number(existing.commandId);
+      const macroId = Number(existing.macroId);
       const valid = isValidCommandRef(refs, profileId, commandId);
+      const macroValid = macroIds.has(macroId);
       return {
         number: index + 1,
         pin: pinLabel(config.hardware.buttonPins[index]),
         deviceProfileId: valid ? profileId : 0,
-        commandId: valid ? commandId : 0
+        commandId: valid ? commandId : 0,
+        assignmentType: existing.assignmentType === "macro" && macroValid ? "macro" : "command",
+        macroId: macroValid ? macroId : 0
       };
+    });
+  });
+}
+
+function clearMacroReferences(macroId) {
+  config.presets.forEach((preset) => {
+    preset.buttons.forEach((button) => {
+      if (button.macroId === macroId) {
+        button.assignmentType = "command";
+        button.macroId = 0;
+      }
     });
   });
 }
@@ -854,6 +1143,16 @@ function clearCommandReferences(profileId, commandId = null) {
         button.commandId = 0;
       }
     });
+  });
+  config.macros = config.macros.filter((macro) => {
+    macro.steps = macro.steps.filter((step) => {
+      const profileMatches = step.deviceProfileId === profileId;
+      const commandMatches = commandId === null || step.commandId === commandId;
+      return !(profileMatches && commandMatches);
+    });
+    if (macro.steps.length) return true;
+    clearMacroReferences(macro.id);
+    return false;
   });
 }
 
@@ -890,6 +1189,26 @@ function updateCommandFromRow(row) {
   if (valueOn) command.valueOn = clampNumber(valueOn.value, 0, 127, command.valueOn);
   const off = row.querySelector(".command-value-off");
   if (off) command.valueOff = clampNumber(off.value, 0, 127, command.valueOff);
+}
+
+function updateMacroStepFromRow(row) {
+  const macro = currentMacro();
+  const step = macro?.steps[Number(row.dataset.stepIndex)];
+  if (!step) return;
+  if (row.querySelector(".macro-step-profile")) {
+    const profileId = Number(row.querySelector(".macro-step-profile").value);
+    if (step.deviceProfileId !== profileId) {
+      step.deviceProfileId = profileId;
+      step.commandId = findProfile(profileId)?.commands[0]?.id || 0;
+    }
+  }
+  if (row.querySelector(".macro-step-command")) {
+    step.commandId = Number(row.querySelector(".macro-step-command").value);
+  }
+  const delay = row.querySelector(".macro-step-delay");
+  if (delay) {
+    step.delayAfterMs = clampNumber(delay.value, 0, MAX_MACRO_DELAY_MS, step.delayAfterMs);
+  }
 }
 
 function exportJson(data, filename, toastMessage) {
@@ -1034,6 +1353,7 @@ document.querySelector("#profile-name").addEventListener("input", (event) => {
   currentProfile().name = event.target.value.slice(0, MAX_PRESET_NAME_LENGTH);
   persistDraft();
   renderAssignments();
+  renderMacros();
   renderButtons();
 });
 
@@ -1041,6 +1361,7 @@ document.querySelector("#profile-channel").addEventListener("change", (event) =>
   currentProfile().midiChannel = clampNumber(event.target.value, 1, 16, currentProfile().midiChannel);
   persistDraft();
   renderAssignments();
+  renderMacros();
   renderButtons();
 });
 
@@ -1061,12 +1382,17 @@ document.querySelector("#command-rows").addEventListener("change", (event) => {
   persistDraft();
   if (event.target.classList.contains("command-type") ||
       event.target.classList.contains("command-message-type")) renderAssignments();
+  renderMacros();
   renderButtons();
 });
 
 document.querySelector("#command-rows").addEventListener("input", (event) => {
   const row = event.target.closest("tr");
-  if (row) { updateCommandFromRow(row); persistDraft(); }
+  if (row) {
+    updateCommandFromRow(row);
+    persistDraft();
+    if (event.target.classList.contains("command-label")) renderMacros();
+  }
 });
 
 document.querySelector("#command-rows").addEventListener("click", (event) => {
@@ -1090,17 +1416,110 @@ document.querySelector("#add-command").addEventListener("click", () => {
   renderAll();
 });
 
+document.querySelector("#macro-list").addEventListener("click", (event) => {
+  const item = event.target.closest("[data-macro-id]");
+  if (!item) return;
+  editingMacroId = Number(item.dataset.macroId);
+  renderAll();
+});
+
+document.querySelector("#add-macro").addEventListener("click", () => {
+  if (config.macros.length >= MAX_MACROS) return;
+  const macro = createMacro();
+  config.macros.push(macro);
+  editingMacroId = macro.id;
+  persistDraft();
+  renderAll();
+});
+
+document.querySelector("#duplicate-macro").addEventListener("click", () => {
+  const macro = currentMacro();
+  if (!macro || config.macros.length >= MAX_MACROS) return;
+  const duplicate = clone(macro);
+  duplicate.id = nextMacroId();
+  duplicate.name = `${duplicate.name} copy`.slice(0, MAX_PRESET_NAME_LENGTH);
+  config.macros.push(duplicate);
+  editingMacroId = duplicate.id;
+  persistDraft();
+  renderAll();
+});
+
+document.querySelector("#remove-macro").addEventListener("click", () => {
+  const macro = currentMacro();
+  if (!macro) return;
+  if (!window.confirm(`Remove ${macro.name}? Stomp switches using it will return to their stored command assignment.`)) return;
+  config.macros = config.macros.filter((item) => item.id !== macro.id);
+  clearMacroReferences(macro.id);
+  editingMacroId = config.macros[0]?.id || 0;
+  persistDraft();
+  renderAll();
+});
+
+document.querySelector("#macro-name").addEventListener("input", (event) => {
+  const macro = currentMacro();
+  if (!macro) return;
+  macro.name = event.target.value.slice(0, MAX_PRESET_NAME_LENGTH);
+  persistDraft();
+  renderMacros();
+  renderButtons();
+});
+
+document.querySelector("#add-macro-step").addEventListener("click", () => {
+  const macro = currentMacro();
+  if (!macro || macro.steps.length >= MAX_MACRO_STEPS) return;
+  macro.steps.push(createMacroStep());
+  persistDraft();
+  renderAll();
+});
+
+document.querySelector("#macro-step-rows").addEventListener("change", (event) => {
+  const row = event.target.closest("tr");
+  if (!row) return;
+  updateMacroStepFromRow(row);
+  persistDraft();
+  renderAll();
+});
+
+document.querySelector("#macro-step-rows").addEventListener("input", (event) => {
+  const row = event.target.closest("tr");
+  if (row) { updateMacroStepFromRow(row); persistDraft(); }
+});
+
+document.querySelector("#macro-step-rows").addEventListener("click", (event) => {
+  const macro = currentMacro();
+  const row = event.target.closest("tr");
+  const index = Number(row?.dataset.stepIndex);
+  if (!macro || !Number.isInteger(index) || index < 0) return;
+  if (event.target.closest(".remove-macro-step") && macro.steps.length > 1) {
+    macro.steps.splice(index, 1);
+  } else return;
+  persistDraft();
+  renderAll();
+});
+
 document.querySelector("#button-grid").addEventListener("change", (event) => {
   const card = event.target.closest("[data-button-number]");
   const button = currentPreset().buttons.find((item) => item.number === Number(card?.dataset.buttonNumber));
   if (!button) return;
   if (isPresetToggleButton(currentPreset(), button.number)) return;
+  if (event.target.classList.contains("button-assignment-type")) {
+    button.assignmentType = event.target.value === "macro" && config.macros.length ? "macro" : "command";
+    if (button.assignmentType === "macro" && !findMacro(button.macroId)) {
+      button.macroId = config.macros[0]?.id || 0;
+    }
+  }
   if (event.target.classList.contains("button-profile")) {
+    button.assignmentType = "command";
     button.deviceProfileId = Number(event.target.value);
     button.commandId = 0;
   }
   if (event.target.classList.contains("button-command")) {
+    button.assignmentType = "command";
     button.commandId = Number(event.target.value);
+  }
+  if (event.target.classList.contains("button-macro")) {
+    button.assignmentType = "macro";
+    button.macroId = Number(event.target.value);
   }
   persistDraft();
   renderButtons();
@@ -1187,6 +1606,7 @@ document.querySelector("#import-file").addEventListener("change", async (event) 
     config = normalizeConfig(JSON.parse(await file.text()));
     editingPresetId = config.device.activePresetId;
     editingProfileId = config.deviceProfiles[0].id;
+    editingMacroId = config.macros[0]?.id || 0;
     persistDraft();
     renderAll();
     const report = validateConfigDraft(config);
@@ -1233,28 +1653,46 @@ async function refreshDefaultsFromDevice() {
   }
 }
 
-async function loadConfigFromDevice() {
+async function loadConfigFromDevice({ preserveDraft = true, notifyDraft = true } = {}) {
   const response = await fetchWithTimeout("/api/config", { cache: "no-store" });
   if (!response.ok) throw new Error("Device configuration was not available");
   const loaded = normalizeConfig(await response.json());
+  const storedDraft = readStoredDraft();
+  if (preserveDraft && storedDraft?.dirty && !configsMatch(storedDraft.config, loaded)) {
+    config = storedDraft.config;
+    editingPresetId = config.device.activePresetId;
+    editingProfileId = config.deviceProfiles[0].id;
+    editingMacroId = config.macros[0]?.id || 0;
+    draftDirty = true;
+    setConnection(true, "Configuration mode - draft");
+    await refreshDefaultsFromDevice();
+    renderAll();
+    if (notifyDraft) showToast("Recovered unsaved browser draft");
+    return;
+  }
+
   config = loaded;
   editingPresetId = config.device.activePresetId;
   editingProfileId = config.deviceProfiles[0].id;
+  editingMacroId = config.macros[0]?.id || 0;
   setConnection(true, "Configuration mode");
   await refreshDefaultsFromDevice();
-  persistDraft();
+  persistCleanDraft();
   renderAll();
 }
 
 document.querySelector("#reload-device").addEventListener("click", async () => {
+  if (draftDirty && !window.confirm("Load from device and discard the unsaved browser draft?")) return;
+  clearDeviceReconnect();
   setConnection(false, "Loading device");
   try {
-    await loadConfigFromDevice();
+    await loadConfigFromDevice({ preserveDraft: false });
     showToast("Loaded from device");
   } catch {
-    setConnection(false, "Browser preview");
+    setConnection(false, "Waiting for device");
     renderAll();
     showToast("Device configuration not available");
+    scheduleDeviceReconnect();
   }
 });
 
@@ -1264,6 +1702,7 @@ document.querySelector("#factory-reset").addEventListener("click", async () => {
   config = normalizeConfig(clone(defaults));
   editingPresetId = config.device.activePresetId;
   editingProfileId = config.deviceProfiles[0].id;
+  editingMacroId = config.macros[0]?.id || 0;
   persistDraft();
   renderAll();
   showToast("Default settings loaded in the editor");
@@ -1285,7 +1724,7 @@ document.querySelector("#firmware-update").addEventListener("click", async () =>
   }
 });
 
-document.querySelector("#save-button").addEventListener("click", async () => {
+async function saveConfiguration({ restart }) {
   config = normalizeConfig(config);
   const report = validateConfigDraft(config);
   if (report.blocking.length) {
@@ -1294,13 +1733,20 @@ document.querySelector("#save-button").addEventListener("click", async () => {
     return;
   }
   persistDraft();
-  if (!connected) { showToast("Draft saved in this browser"); return; }
-  const button = document.querySelector("#save-button");
+  if (!connected) {
+    showToast("Draft saved in this browser. Reconnect to save to the pedal.");
+    return;
+  }
+  const saveDeviceButton = document.querySelector("#save-device-button");
+  const saveRestartButton = document.querySelector("#save-button");
+  const activeButton = restart ? saveRestartButton : saveDeviceButton;
   saveInProgress = true;
-  button.disabled = true;
-  button.textContent = "Saving";
+  saveDeviceButton.disabled = true;
+  saveRestartButton.disabled = true;
+  activeButton.textContent = "Saving";
+  let reconnectAfterSave = false;
   try {
-    const response = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
+    const response = await fetchWithTimeout("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) }, 8000);
     if (!response.ok) {
       let message = "Save failed. The pedal configuration was not changed.";
       try {
@@ -1311,22 +1757,49 @@ document.querySelector("#save-button").addEventListener("click", async () => {
       }
       throw new Error(message);
     }
-    await fetch("/api/reboot", { method: "POST" });
-    showToast("Configuration saved. Restarting pedal.");
-    setConnection(false, "Restarting");
-  } catch (error) { showToast(error.message || "Save failed. The pedal configuration was not changed."); }
+    persistCleanDraft();
+    if (restart) {
+      await fetchWithTimeout("/api/reboot", { method: "POST" }, 3000);
+      showToast("Configuration saved. Restarting pedal.");
+      setConnection(false, "Restarting");
+    } else {
+      await loadConfigFromDevice({ preserveDraft: false });
+      showToast("Configuration saved to device");
+    }
+  } catch (error) {
+    const networkLost = error?.name === "AbortError" || error instanceof TypeError;
+    if (networkLost) {
+      setConnection(false, "Waiting for device");
+      reconnectAfterSave = true;
+      showToast("Device disconnected. Browser draft kept.");
+    } else {
+      showToast(error.message || "Save failed. Browser draft kept.");
+    }
+  }
   saveInProgress = false;
-  button.textContent = SAVE_BUTTON_LABEL;
+  saveDeviceButton.textContent = SAVE_DEVICE_BUTTON_LABEL;
+  saveRestartButton.textContent = SAVE_BUTTON_LABEL;
   renderValidation();
+  if (reconnectAfterSave) scheduleDeviceReconnect();
+}
+
+document.querySelector("#save-device-button").addEventListener("click", () => {
+  saveConfiguration({ restart: false });
+});
+
+document.querySelector("#save-button").addEventListener("click", () => {
+  saveConfiguration({ restart: true });
 });
 
 async function loadConfiguration() {
   applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || document.documentElement.dataset.theme, false);
   defaults = clone(EMBEDDED_DEFAULT_CONFIG);
-  const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
-  config = normalizeConfig(saved ? JSON.parse(saved) : clone(defaults));
+  const storedDraft = readStoredDraft();
+  config = storedDraft ? storedDraft.config : normalizeConfig(clone(defaults));
+  draftDirty = Boolean(storedDraft?.dirty);
   editingPresetId = config.device.activePresetId;
   editingProfileId = config.deviceProfiles[0].id;
+  editingMacroId = config.macros[0]?.id || 0;
   setConnection(false, "Loading device");
   renderAll();
 
@@ -1345,10 +1818,18 @@ async function loadConfiguration() {
   setConnection(false, "Browser preview");
   editingPresetId = config.device.activePresetId;
   editingProfileId = config.deviceProfiles[0].id;
+  editingMacroId = config.macros[0]?.id || 0;
   renderAll();
+  scheduleDeviceReconnect();
 }
 
 loadConfiguration().catch(() => {
   setConnection(false, "Unable to load configuration");
   showToast("Unable to load the configurator");
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!draftDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
 });

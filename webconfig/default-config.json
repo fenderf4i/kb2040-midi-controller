@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "device": {
     "name": "MIDI Controller",
     "activePresetId": 1
@@ -71,6 +71,7 @@
       ]
     }
   ],
+  "macros": [],
   "presets": [
     {
       "id": 1,

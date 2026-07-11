@@ -7,7 +7,8 @@
 
 namespace {
 constexpr uint32_t CONFIG_MAGIC = 0x4B425043;  // KBPC
-constexpr uint16_t CONFIG_VERSION = 12;
+constexpr uint16_t CONFIG_VERSION = 13;
+constexpr uint16_t MACROS_PREVIOUS_VERSION = 12;
 constexpr uint16_t CORRECTED_BUTTON_DEFAULTS_PREVIOUS_VERSION = 11;
 constexpr uint16_t CORRECTED_BUTTON_DEFAULTS_INITIAL_VERSION = 10;
 constexpr uint16_t STEMMA_QT_ENCODER_PREVIOUS_VERSION = 9;
@@ -100,6 +101,24 @@ struct StoredHardwareConfig {
   uint8_t encoderSwitchPin;
 };
 
+struct StoredButtonPresetConfig {
+  uint16_t id;
+  char name[PRESET_NAME_LENGTH];
+  ButtonAssignmentRef buttonAssignments[MAX_BUTTON_COUNT];
+};
+
+struct StoredV12DeviceConfigPayload {
+  char deviceName[DEVICE_NAME_LENGTH];
+  HardwareConfig hardware;
+  DeviceSettings settings;
+  PresetToggleConfig presetToggle;
+  uint16_t activePresetId;
+  uint8_t profileCount;
+  DeviceProfileConfig profiles[MAX_DEVICE_PROFILES];
+  uint8_t presetCount;
+  StoredButtonPresetConfig presets[MAX_PRESETS];
+};
+
 struct StoredV9DeviceConfigPayload {
   char deviceName[DEVICE_NAME_LENGTH];
   StoredHardwareConfig hardware;
@@ -109,7 +128,7 @@ struct StoredV9DeviceConfigPayload {
   uint8_t profileCount;
   DeviceProfileConfig profiles[MAX_DEVICE_PROFILES];
   uint8_t presetCount;
-  PedalPresetConfig presets[MAX_PRESETS];
+  StoredButtonPresetConfig presets[MAX_PRESETS];
 };
 
 struct StoredV5DeviceConfigPayload {
@@ -162,7 +181,7 @@ struct StoredV7DeviceConfigPayload {
   uint8_t profileCount;
   StoredV7DeviceProfileConfig profiles[MAX_DEVICE_PROFILES];
   uint8_t presetCount;
-  PedalPresetConfig presets[MAX_PRESETS];
+  StoredButtonPresetConfig presets[MAX_PRESETS];
 };
 
 struct StoredV8DeviceConfigPayload {
@@ -173,7 +192,7 @@ struct StoredV8DeviceConfigPayload {
   uint8_t profileCount;
   DeviceProfileConfig profiles[MAX_DEVICE_PROFILES];
   uint8_t presetCount;
-  PedalPresetConfig presets[MAX_PRESETS];
+  StoredButtonPresetConfig presets[MAX_PRESETS];
 };
 
 struct StoredV4DeviceConfigPayload {
@@ -555,6 +574,13 @@ void migrateLegacyPreset(const StoredV2PedalPresetConfig &sourcePreset,
   }
 }
 
+void copyStoredButtonPreset(const StoredButtonPresetConfig &source, PedalPresetConfig &target) {
+  memset(&target, 0, sizeof(target));
+  target.id = source.id;
+  copyTextValue(target.name, sizeof(target.name), source.name);
+  memcpy(target.buttonAssignments, source.buttonAssignments, sizeof(target.buttonAssignments));
+}
+
 void migrateV9Config(const StoredV9DeviceConfigPayload &source, DeviceConfigPayload &target) {
   memset(&target, 0, sizeof(target));
   copyTextValue(target.deviceName, sizeof(target.deviceName), source.deviceName);
@@ -568,7 +594,7 @@ void migrateV9Config(const StoredV9DeviceConfigPayload &source, DeviceConfigPayl
   }
   target.presetCount = min<uint8_t>(source.presetCount, MAX_PRESETS);
   for (uint8_t p = 0; p < target.presetCount; ++p) {
-    target.presets[p] = source.presets[p];
+    copyStoredButtonPreset(source.presets[p], target.presets[p]);
   }
 }
 
@@ -597,6 +623,24 @@ void applyCorrectedButtonDefaultsIfFactory(DeviceConfigPayload &config) {
   }
 }
 
+void migrateV12Config(const StoredV12DeviceConfigPayload &source, DeviceConfigPayload &target) {
+  memset(&target, 0, sizeof(target));
+  copyTextValue(target.deviceName, sizeof(target.deviceName), source.deviceName);
+  target.hardware = source.hardware;
+  target.settings = source.settings;
+  target.presetToggle = source.presetToggle;
+  target.activePresetId = source.activePresetId;
+  target.profileCount = min<uint8_t>(source.profileCount, MAX_DEVICE_PROFILES);
+  for (uint8_t p = 0; p < target.profileCount; ++p) {
+    target.profiles[p] = source.profiles[p];
+  }
+  target.macroCount = 0;
+  target.presetCount = min<uint8_t>(source.presetCount, MAX_PRESETS);
+  for (uint8_t p = 0; p < target.presetCount; ++p) {
+    copyStoredButtonPreset(source.presets[p], target.presets[p]);
+  }
+}
+
 void migrateV8Config(const StoredV8DeviceConfigPayload &source, DeviceConfigPayload &target) {
   memset(&target, 0, sizeof(target));
   copyTextValue(target.deviceName, sizeof(target.deviceName), source.deviceName);
@@ -610,7 +654,7 @@ void migrateV8Config(const StoredV8DeviceConfigPayload &source, DeviceConfigPayl
   }
   target.presetCount = min<uint8_t>(source.presetCount, MAX_PRESETS);
   for (uint8_t p = 0; p < target.presetCount; ++p) {
-    target.presets[p] = source.presets[p];
+    copyStoredButtonPreset(source.presets[p], target.presets[p]);
   }
 }
 
@@ -636,7 +680,7 @@ void migrateV7Config(const StoredV7DeviceConfigPayload &source, DeviceConfigPayl
   }
   target.presetCount = min<uint8_t>(source.presetCount, MAX_PRESETS);
   for (uint8_t p = 0; p < target.presetCount; ++p) {
-    target.presets[p] = source.presets[p];
+    copyStoredButtonPreset(source.presets[p], target.presets[p]);
   }
 }
 
@@ -737,16 +781,37 @@ bool DeviceConfigStore::load(DeviceConfigPayload &config) {
           if (normalizeDeviceName(config)) save(config);
           return true;
         }
+      } else if (header.version == MACROS_PREVIOUS_VERSION &&
+                 header.payloadSize == sizeof(StoredV12DeviceConfigPayload)) {
+        StoredV12DeviceConfigPayload previous{};
+        const size_t payloadBytes = file.read(reinterpret_cast<uint8_t *>(&previous), sizeof(previous));
+        file.close();
+        const uint32_t previousChecksum = checksumBytes(
+            reinterpret_cast<const uint8_t *>(&previous), sizeof(previous));
+        if (payloadBytes == sizeof(previous) && header.checksum == previousChecksum) {
+          migrateV12Config(previous, config);
+          if (validate(config)) {
+            normalizeDeviceName(config);
+            save(config);
+            return true;
+          }
+        }
       } else if ((header.version == CORRECTED_BUTTON_DEFAULTS_PREVIOUS_VERSION ||
                   header.version == CORRECTED_BUTTON_DEFAULTS_INITIAL_VERSION) &&
-                 header.payloadSize == sizeof(DeviceConfigPayload)) {
-        const size_t payloadBytes = file.read(reinterpret_cast<uint8_t *>(&config), sizeof(config));
+                 header.payloadSize == sizeof(StoredV12DeviceConfigPayload)) {
+        StoredV12DeviceConfigPayload previous{};
+        const size_t payloadBytes = file.read(reinterpret_cast<uint8_t *>(&previous), sizeof(previous));
         file.close();
-        if (payloadBytes == sizeof(config) && header.checksum == checksum(config) && validate(config)) {
+        const uint32_t previousChecksum = checksumBytes(
+            reinterpret_cast<const uint8_t *>(&previous), sizeof(previous));
+        if (payloadBytes == sizeof(previous) && header.checksum == previousChecksum) {
+          migrateV12Config(previous, config);
           normalizeDeviceName(config);
           applyCorrectedButtonDefaultsIfFactory(config);
-          save(config);
-          return true;
+          if (validate(config)) {
+            save(config);
+            return true;
+          }
         }
       } else if (header.version == STEMMA_QT_ENCODER_PREVIOUS_VERSION &&
                  header.payloadSize == sizeof(StoredV9DeviceConfigPayload)) {
@@ -1044,6 +1109,20 @@ const DeviceProfileConfig *DeviceConfigStore::findProfile(const DeviceConfigPayl
   return nullptr;
 }
 
+MacroConfig *DeviceConfigStore::findMacro(DeviceConfigPayload &config, uint16_t id) {
+  for (uint8_t i = 0; i < config.macroCount; ++i) {
+    if (config.macros[i].id == id) return &config.macros[i];
+  }
+  return nullptr;
+}
+
+const MacroConfig *DeviceConfigStore::findMacro(const DeviceConfigPayload &config, uint16_t id) {
+  for (uint8_t i = 0; i < config.macroCount; ++i) {
+    if (config.macros[i].id == id) return &config.macros[i];
+  }
+  return nullptr;
+}
+
 AssignmentConfig *DeviceConfigStore::findAssignment(DeviceProfileConfig &profile, uint16_t id) {
   for (uint8_t i = 0; i < profile.assignmentCount; ++i) {
     if (profile.assignments[i].id == id) return &profile.assignments[i];
@@ -1122,6 +1201,29 @@ bool DeviceConfigStore::validate(DeviceConfigPayload &config) {
     }
   }
 
+  if (config.macroCount > MAX_MACROS) return false;
+  for (uint8_t m = 0; m < config.macroCount; ++m) {
+    MacroConfig &macro = config.macros[m];
+    macro.name[PRESET_NAME_LENGTH - 1] = '\0';
+    if (macro.id == UNASSIGNED_ID || macro.stepCount == 0 || macro.stepCount > MAX_MACRO_STEPS) return false;
+    for (uint8_t n = m + 1; n < config.macroCount; ++n) {
+      if (macro.id == config.macros[n].id) return false;
+    }
+    for (uint8_t s = 0; s < macro.stepCount; ++s) {
+      MacroStepConfig &step = macro.steps[s];
+      if (step.delayAfterMs > MAX_MACRO_STEP_DELAY_MS ||
+          findAssignment(config, step.command, nullptr) == nullptr) {
+        return false;
+      }
+    }
+    for (uint8_t s = macro.stepCount; s < MAX_MACRO_STEPS; ++s) {
+      macro.steps[s] = {{UNASSIGNED_ID, UNASSIGNED_ID}, 0};
+    }
+  }
+  for (uint8_t m = config.macroCount; m < MAX_MACROS; ++m) {
+    memset(&config.macros[m], 0, sizeof(config.macros[m]));
+  }
+
   for (uint8_t p = 0; p < config.presetCount; ++p) {
     PedalPresetConfig &preset = config.presets[p];
     preset.name[PRESET_NAME_LENGTH - 1] = '\0';
@@ -1137,29 +1239,45 @@ bool DeviceConfigStore::validate(DeviceConfigPayload &config) {
       } else if (findAssignment(config, reference, nullptr) == nullptr) {
         reference = {UNASSIGNED_ID, UNASSIGNED_ID};
       }
+      if (preset.buttonMacroIds[i] != UNASSIGNED_ID &&
+          findMacro(config, preset.buttonMacroIds[i]) == nullptr) {
+        preset.buttonMacroIds[i] = UNASSIGNED_ID;
+      }
     }
     for (uint8_t i = config.hardware.buttonCount; i < MAX_BUTTON_COUNT; ++i) {
       preset.buttonAssignments[i] = {UNASSIGNED_ID, UNASSIGNED_ID};
+      preset.buttonMacroIds[i] = UNASSIGNED_ID;
     }
   }
 
-  if (config.presetToggle.enabled) {
-    if (config.presetToggle.switchNumber < 1 ||
-        config.presetToggle.switchNumber > config.hardware.buttonCount ||
-        config.presetToggle.primaryPresetId == UNASSIGNED_ID ||
-        config.presetToggle.alternatePresetId == UNASSIGNED_ID ||
-        config.presetToggle.primaryPresetId == config.presetToggle.alternatePresetId ||
-        findPreset(config, config.presetToggle.primaryPresetId) == nullptr ||
-        findPreset(config, config.presetToggle.alternatePresetId) == nullptr) {
-      return false;
+  if (config.presetToggle.switchNumber < 1 ||
+      config.presetToggle.switchNumber > config.hardware.buttonCount) {
+    config.presetToggle.switchNumber = 1;
+  }
+  if (config.presetCount >= 2) {
+    if (findPreset(config, config.presetToggle.primaryPresetId) == nullptr) {
+      config.presetToggle.primaryPresetId = config.presets[0].id;
+    }
+    if (findPreset(config, config.presetToggle.alternatePresetId) == nullptr ||
+        config.presetToggle.alternatePresetId == config.presetToggle.primaryPresetId) {
+      config.presetToggle.alternatePresetId = UNASSIGNED_ID;
+      for (uint8_t p = 0; p < config.presetCount; ++p) {
+        if (config.presets[p].id != config.presetToggle.primaryPresetId) {
+          config.presetToggle.alternatePresetId = config.presets[p].id;
+          break;
+        }
+      }
     }
   } else {
     config.presetToggle.primaryPresetId = UNASSIGNED_ID;
     config.presetToggle.alternatePresetId = UNASSIGNED_ID;
-    if (config.presetToggle.switchNumber < 1 ||
-        config.presetToggle.switchNumber > config.hardware.buttonCount) {
-      config.presetToggle.switchNumber = 1;
-    }
+    config.presetToggle.enabled = false;
+  }
+  if (config.presetToggle.enabled &&
+      (config.presetToggle.primaryPresetId == UNASSIGNED_ID ||
+       config.presetToggle.alternatePresetId == UNASSIGNED_ID ||
+       config.presetToggle.primaryPresetId == config.presetToggle.alternatePresetId)) {
+    return false;
   }
 
   if (activePreset(config) == nullptr) config.activePresetId = config.presets[0].id;

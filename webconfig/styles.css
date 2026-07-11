@@ -239,7 +239,7 @@ h2 {
 }
 
 .preset-selector select {
-  width: min(260px, 42vw);
+  width: min(340px, 48vw);
   height: 38px;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -395,26 +395,42 @@ main {
 }
 
 .assignment-table th:nth-child(1) {
-  width: 180px;
-}
-
-.assignment-table th:nth-child(2) {
-  width: 150px;
-}
-
-.assignment-table th:nth-child(3) {
   width: auto;
 }
 
+.assignment-table th:nth-child(2) {
+  width: 190px;
+}
+
+.assignment-table th:nth-child(3) {
+  width: 150px;
+}
+
 .assignment-table th:nth-child(4) {
-  width: 96px;
+  width: 104px;
 }
 
 .assignment-table th:nth-child(5) {
-  width: 170px;
+  width: 180px;
 }
 
 .assignment-table th:nth-child(6) {
+  width: 72px;
+}
+
+.macro-table th:nth-child(1) {
+  width: 220px;
+}
+
+.macro-table th:nth-child(2) {
+  width: auto;
+}
+
+.macro-table th:nth-child(3) {
+  width: 118px;
+}
+
+.macro-table th:nth-child(4) {
   width: 72px;
 }
 
@@ -447,6 +463,14 @@ main {
   background: var(--danger-soft) !important;
 }
 
+.empty-panel {
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+}
+
 .value-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -467,6 +491,26 @@ main {
   color: var(--text-muted);
   font-size: 0.68rem;
   line-height: 1;
+}
+
+.unit-field-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.unit-field-wrap .row-field {
+  padding-right: 36px;
+}
+
+.unit-field-wrap span {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  pointer-events: none;
 }
 
 .muted-cell {
@@ -589,6 +633,16 @@ main {
   grid-template-columns: minmax(200px, 1fr) minmax(110px, 145px) minmax(190px, 230px) auto;
   align-items: end;
   margin-bottom: 18px;
+}
+
+.macro-header-grid {
+  grid-template-columns: minmax(180px, 28ch) auto;
+  justify-content: start;
+}
+
+#macro-name {
+  width: 28ch;
+  max-width: 100%;
 }
 
 .profile-actions {
@@ -960,7 +1014,7 @@ main {
     text-transform: uppercase;
   }
 
-  .assignment-table td:nth-child(3),
+  .assignment-table td:nth-child(1),
   .assignment-table td:nth-child(5) {
     grid-column: span 2;
   }
@@ -1070,7 +1124,7 @@ main {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .assignment-table td:nth-child(3),
+  .assignment-table td:nth-child(1),
   .assignment-table td:nth-child(5) {
     grid-column: auto;
   }

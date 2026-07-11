@@ -48,6 +48,7 @@ const uint8_t STEMMA_QT_ENCODER_SWITCH_PIN = 24;
 struct MidiButton {
   byte pin;
   ButtonAssignmentRef assignment;
+  uint16_t macroId;
   bool toggleActive;
   byte lastSentValue;
   bool stablePressed;
@@ -59,14 +60,21 @@ struct MidiButton {
 };
 
 MidiButton buttons[] = {
-  {4, {1, 18}, false, 0, false, false, 0, 0, false, false},
-  {5, {1, 19}, false, 0, false, false, 0, 0, false, false},
-  {6, {1, 20}, false, 0, false, false, 0, 0, false, false},
-  {7, {1, 4}, false, 0, false, false, 0, 0, false, false},
-  {8, {1, 5}, false, 0, false, false, 0, 0, false, false},
-  {9, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false},
-  {A1, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false},
-  {A2, {UNASSIGNED_ID, UNASSIGNED_ID}, false, 0, false, false, 0, 0, false, false}
+  {4, {1, 18}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {5, {1, 19}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {6, {1, 20}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {7, {1, 4}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {8, {1, 5}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {9, {UNASSIGNED_ID, UNASSIGNED_ID}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {A1, {UNASSIGNED_ID, UNASSIGNED_ID}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false},
+  {A2, {UNASSIGNED_ID, UNASSIGNED_ID}, UNASSIGNED_ID, false, 0, false, false, 0, 0, false, false}
+};
+
+struct MacroPlaybackState {
+  bool active;
+  uint16_t macroId;
+  uint8_t nextStepIndex;
+  unsigned long nextStepAtMs;
 };
 
 const byte BUTTON_STORAGE_COUNT = sizeof(buttons) / sizeof(buttons[0]);
@@ -75,6 +83,7 @@ const byte NO_BUTTON_SELECTED = 255;
 DeviceConfigStore configStore;
 DeviceConfigPayload deviceConfig{};
 WebConfigServer webConfigServer(configStore, deviceConfig);
+MacroPlaybackState macroPlayback{};
 
 U8G2_SSD1306_128X64_NONAME_F_2ND_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 bool displayAvailable = false;
@@ -140,6 +149,11 @@ StemmaQtEncoderControl qtEncoderControl = {10, false, false, false, 0, 0, false}
 enum class MenuScreen : uint8_t {
   Main,
   Presets,
+  PresetToggle,
+  PresetToggleEnabled,
+  PresetTogglePrimary,
+  PresetToggleAlternate,
+  PresetToggleSwitch,
   Switches,
   Assignments,
   MidiOutput,
@@ -208,6 +222,12 @@ const AssignmentConfig *assignmentForButton(byte buttonIndex,
   return DeviceConfigStore::findAssignment(deviceConfig, buttons[buttonIndex].assignment, profile);
 }
 
+const MacroConfig *macroForButton(byte buttonIndex) {
+  if (buttonIndex >= deviceConfig.hardware.buttonCount) return nullptr;
+  if (buttons[buttonIndex].macroId == UNASSIGNED_ID) return nullptr;
+  return DeviceConfigStore::findMacro(deviceConfig, buttons[buttonIndex].macroId);
+}
+
 void applyHardwareConfiguration() {
   byte count = deviceConfig.hardware.buttonCount;
   if (count == 0 || count > MAX_STOMP_SWITCH_COUNT) count = DEFAULT_BUTTON_COUNT;
@@ -216,6 +236,7 @@ void applyHardwareConfiguration() {
   for (byte i = 0; i < BUTTON_STORAGE_COUNT; ++i) {
     buttons[i].pin = deviceConfig.hardware.buttonPins[i];
     buttons[i].assignment = {UNASSIGNED_ID, UNASSIGNED_ID};
+    buttons[i].macroId = UNASSIGNED_ID;
     buttons[i].toggleActive = false;
     buttons[i].stablePressed = false;
     buttons[i].lastReadingPressed = false;
@@ -346,14 +367,18 @@ int optionForHomeDelay(uint8_t seconds) {
   return 2;
 }
 
-void applyAssignmentToButton(byte buttonIndex, ButtonAssignmentRef assignment) {
+void applyButtonTarget(byte buttonIndex, ButtonAssignmentRef assignment, uint16_t macroId) {
   if (buttonIndex >= deviceConfig.hardware.buttonCount) return;
   PedalPresetConfig &preset = activePreset();
   if (assignmentRefIsAssigned(assignment) &&
       DeviceConfigStore::findAssignment(deviceConfig, assignment, nullptr) == nullptr) {
     assignment = {UNASSIGNED_ID, UNASSIGNED_ID};
   }
+  if (macroId != UNASSIGNED_ID && DeviceConfigStore::findMacro(deviceConfig, macroId) == nullptr) {
+    macroId = UNASSIGNED_ID;
+  }
   buttons[buttonIndex].assignment = assignment;
+  buttons[buttonIndex].macroId = macroId;
   buttons[buttonIndex].toggleActive = false;
   const AssignmentConfig *resolved = DeviceConfigStore::findAssignment(deviceConfig, assignment, nullptr);
   buttons[buttonIndex].lastSentValue = resolved != nullptr
@@ -364,18 +389,29 @@ void applyAssignmentToButton(byte buttonIndex, ButtonAssignmentRef assignment) {
                                                   : resolved->valueOn)
                                            : 0;
   preset.buttonAssignments[buttonIndex] = assignment;
+  preset.buttonMacroIds[buttonIndex] = macroId;
+}
+
+void applyAssignmentToButton(byte buttonIndex, ButtonAssignmentRef assignment) {
+  applyButtonTarget(buttonIndex, assignment, UNASSIGNED_ID);
+}
+
+void applyMacroToButton(byte buttonIndex, uint16_t macroId) {
+  if (buttonIndex >= deviceConfig.hardware.buttonCount) return;
+  applyButtonTarget(buttonIndex, buttons[buttonIndex].assignment, macroId);
 }
 
 void saveButtonAssignment(byte buttonIndex) {
   if (buttonIndex >= deviceConfig.hardware.buttonCount) return;
   activePreset().buttonAssignments[buttonIndex] = buttons[buttonIndex].assignment;
+  activePreset().buttonMacroIds[buttonIndex] = buttons[buttonIndex].macroId;
   configStore.save(deviceConfig);
 }
 
 void applyActivePreset() {
   PedalPresetConfig &preset = activePreset();
   for (byte i = 0; i < deviceConfig.hardware.buttonCount; ++i) {
-    applyAssignmentToButton(i, preset.buttonAssignments[i]);
+    applyButtonTarget(i, preset.buttonAssignments[i], preset.buttonMacroIds[i]);
   }
 }
 
@@ -394,8 +430,56 @@ void loadDeviceConfiguration() {
   applyActivePreset();
 }
 
+bool sendReferencedCommandPress(const ButtonAssignmentRef &reference, byte *lastSentValue = nullptr) {
+  const DeviceProfileConfig *profile = nullptr;
+  const AssignmentConfig *assignment = DeviceConfigStore::findAssignment(deviceConfig, reference, &profile);
+  if (assignment == nullptr || profile == nullptr) return false;
+
+  if (assignment->messageType == MidiMessageType::ProgramChange) {
+    if (lastSentValue != nullptr) *lastSentValue = assignment->controlChange;
+    sendProgramChange(profile->midiChannel, assignment->controlChange);
+    return true;
+  }
+
+  if (lastSentValue != nullptr) *lastSentValue = assignment->valueOn;
+  sendControlChange(profile->midiChannel, assignment->controlChange, assignment->valueOn);
+  return true;
+}
+
+bool startMacroPlayback(byte buttonIndex) {
+  const MacroConfig *macro = macroForButton(buttonIndex);
+  if (macro == nullptr || macro->stepCount == 0) return false;
+  macroPlayback = {true, macro->id, 0, millis()};
+  return true;
+}
+
+void serviceMacroPlayback(unsigned long now) {
+  if (!macroPlayback.active ||
+      static_cast<long>(now - macroPlayback.nextStepAtMs) < 0) {
+    return;
+  }
+
+  const MacroConfig *macro = DeviceConfigStore::findMacro(deviceConfig, macroPlayback.macroId);
+  if (macro == nullptr || macroPlayback.nextStepIndex >= macro->stepCount) {
+    macroPlayback.active = false;
+    return;
+  }
+
+  const MacroStepConfig &step = macro->steps[macroPlayback.nextStepIndex++];
+  sendReferencedCommandPress(step.command);
+  if (macroPlayback.nextStepIndex >= macro->stepCount) {
+    macroPlayback.active = false;
+  } else {
+    macroPlayback.nextStepAtMs = now + step.delayAfterMs;
+  }
+}
+
 void sendButtonPress(byte buttonIndex) {
   MidiButton &button = buttons[buttonIndex];
+  if (macroForButton(buttonIndex) != nullptr) {
+    startMacroPlayback(buttonIndex);
+    return;
+  }
   const DeviceProfileConfig *profile = nullptr;
   const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
   if (assignment == nullptr) return;
@@ -416,6 +500,7 @@ void sendButtonPress(byte buttonIndex) {
 }
 
 void sendButtonRelease(byte buttonIndex) {
+  if (macroForButton(buttonIndex) != nullptr) return;
   MidiButton &button = buttons[buttonIndex];
   const DeviceProfileConfig *profile = nullptr;
   const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
@@ -568,6 +653,17 @@ bool presetToggleAppliesToButton(byte buttonIndex) {
          presetToggleTargetPreset() != nullptr;
 }
 
+void formatPresetToggleTargetLine(byte buttonIndex, char *output, size_t outputSize) {
+  if (outputSize == 0) return;
+  output[0] = '\0';
+  const PedalPresetConfig *targetPreset = presetToggleAppliesToButton(buttonIndex)
+                                             ? presetToggleTargetPreset()
+                                             : nullptr;
+  if (targetPreset == nullptr) return;
+  snprintf(output, outputSize, "B%u to %s", buttonIndex + 1, targetPreset->name);
+  output[outputSize - 1] = '\0';
+}
+
 void formatHomeButtonLabel(byte buttonIndex, char *output, size_t outputSize) {
   if (outputSize == 0) return;
   const PedalPresetConfig *targetPreset = presetToggleAppliesToButton(buttonIndex)
@@ -575,6 +671,13 @@ void formatHomeButtonLabel(byte buttonIndex, char *output, size_t outputSize) {
                                              : nullptr;
   if (targetPreset != nullptr) {
     snprintf(output, outputSize, "Page %s", targetPreset->name);
+    output[outputSize - 1] = '\0';
+    return;
+  }
+
+  const MacroConfig *macro = macroForButton(buttonIndex);
+  if (macro != nullptr) {
+    snprintf(output, outputSize, "Macro %s", macro->name);
     output[outputSize - 1] = '\0';
     return;
   }
@@ -765,12 +868,20 @@ void showButtonOutput(byte buttonIndex, bool resetOutputTimer = true) {
   MidiButton &button = buttons[buttonIndex];
   const DeviceProfileConfig *profile = nullptr;
   const AssignmentConfig *assignment = assignmentForButton(buttonIndex, &profile);
+  const MacroConfig *macro = macroForButton(buttonIndex);
 
   snprintf(line, sizeof(line), "Last button B%u", buttonIndex + 1);
   drawHeader(line);
 
   display.setFont(u8g2_font_7x14B_tf);
-  if (assignment == nullptr) {
+  if (macro != nullptr) {
+    drawClippedText(macro->name, 0, 35, DISPLAY_CONTENT_WIDTH);
+    display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
+    display.setFont(u8g2_font_6x10_tf);
+    char footer[18];
+    snprintf(footer, sizeof(footer), "Macro / %u steps", macro->stepCount);
+    display.drawStr(4, 61, footer);
+  } else if (assignment == nullptr) {
     drawClippedText("Unassigned", 0, 35, DISPLAY_CONTENT_WIDTH);
     display.drawRFrame(0, 51, DISPLAY_CONTENT_WIDTH, 13, 2);
     display.setFont(u8g2_font_6x10_tf);
@@ -799,13 +910,23 @@ void showEditModeScreen() {
   MidiButton &button = buttons[editButtonIndex];
   const DeviceProfileConfig *profile = nullptr;
   const AssignmentConfig *assignment = assignmentForButton(editButtonIndex, &profile);
+  const MacroConfig *macro = macroForButton(editButtonIndex);
   char line[20];
 
   display.clearBuffer();
   snprintf(line, sizeof(line), "EDIT B%u", editButtonIndex + 1);
   drawHeader(line);
 
-  if (assignment == nullptr) {
+  if (macro != nullptr) {
+    display.setFont(u8g2_font_6x10_tf);
+    drawClippedText("Macro", 0, 28, DISPLAY_CONTENT_WIDTH);
+    display.setFont(u8g2_font_7x14B_tf);
+    drawScrollingText(macro->name, 0, 43, DISPLAY_CONTENT_WIDTH);
+    display.setFont(u8g2_font_6x10_tf);
+    char footer[18];
+    snprintf(footer, sizeof(footer), "%u steps", macro->stepCount);
+    drawCenteredText(61, footer);
+  } else if (assignment == nullptr) {
     display.setFont(u8g2_font_6x10_tf);
     display.drawStr(0, 28, "Unassigned");
     display.setFont(u8g2_font_7x14B_tf);
@@ -912,6 +1033,10 @@ int assignmentLibraryCount() {
   return count;
 }
 
+int assignmentOptionCount() {
+  return assignmentLibraryCount() + deviceConfig.macroCount;
+}
+
 bool assignmentOptionAt(int option,
                         ButtonAssignmentRef &reference,
                         const DeviceProfileConfig **profile,
@@ -937,6 +1062,14 @@ bool assignmentOptionAt(int option,
   return false;
 }
 
+bool macroOptionAt(int option, const MacroConfig **macro) {
+  if (macro != nullptr) *macro = nullptr;
+  const int macroIndex = option - assignmentLibraryCount() - 1;
+  if (macroIndex < 0 || macroIndex >= deviceConfig.macroCount) return false;
+  if (macro != nullptr) *macro = &deviceConfig.macros[macroIndex];
+  return true;
+}
+
 int assignmentOptionForReference(const ButtonAssignmentRef &reference) {
   if (!assignmentRefIsAssigned(reference)) return 0;
   int cursor = 1;
@@ -952,15 +1085,40 @@ int assignmentOptionForReference(const ButtonAssignmentRef &reference) {
   return 0;
 }
 
+int assignmentOptionForMacro(uint16_t macroId) {
+  if (macroId == UNASSIGNED_ID) return 0;
+  const int firstMacroOption = assignmentLibraryCount() + 1;
+  for (uint8_t i = 0; i < deviceConfig.macroCount; ++i) {
+    if (deviceConfig.macros[i].id == macroId) return firstMacroOption + i;
+  }
+  return 0;
+}
+
 ButtonAssignmentRef assignmentRefForOption(int option) {
   ButtonAssignmentRef reference{UNASSIGNED_ID, UNASSIGNED_ID};
   assignmentOptionAt(option, reference, nullptr, nullptr);
   return reference;
 }
 
+void applyAssignmentOptionToButton(byte buttonIndex, int option) {
+  const MacroConfig *macro = nullptr;
+  if (macroOptionAt(option, &macro) && macro != nullptr) {
+    applyMacroToButton(buttonIndex, macro->id);
+    return;
+  }
+  applyAssignmentToButton(buttonIndex, assignmentRefForOption(option));
+}
+
 void assignmentLabelForOption(int option, char *output, size_t outputSize) {
   if (option <= 0) {
     strncpy(output, "Unassigned", outputSize);
+    output[outputSize - 1] = '\0';
+    return;
+  }
+
+  const MacroConfig *macro = nullptr;
+  if (macroOptionAt(option, &macro) && macro != nullptr) {
+    snprintf(output, outputSize, "Macro: %s", macro->name);
     output[outputSize - 1] = '\0';
     return;
   }
@@ -984,15 +1142,15 @@ void changeEditedAssignment(int delta) {
   }
 
   MidiButton &button = buttons[editButtonIndex];
-  const int optionCount = assignmentLibraryCount() + 1;
+  const int optionCount = assignmentOptionCount() + 1;
   int currentOption = assignmentOptionForReference(button.assignment);
+  if (button.macroId != UNASSIGNED_ID) currentOption = assignmentOptionForMacro(button.macroId);
 
   int newOption = (currentOption + delta) % optionCount;
   if (newOption < 0) newOption += optionCount;
-  const ButtonAssignmentRef newAssignment = assignmentRefForOption(newOption);
 
-  if (!assignmentRefsMatch(button.assignment, newAssignment)) {
-    applyAssignmentToButton(editButtonIndex, newAssignment);
+  if (newOption != currentOption) {
+    applyAssignmentOptionToButton(editButtonIndex, newOption);
     editAssignmentDirty = true;
   }
 
@@ -1203,6 +1361,62 @@ void setActivePresetIndex(uint8_t index) {
   setActivePresetId(deviceConfig.presets[index].id, true);
 }
 
+int presetIndexForId(uint16_t presetId) {
+  for (uint8_t i = 0; i < deviceConfig.presetCount; ++i) {
+    if (deviceConfig.presets[i].id == presetId) return i;
+  }
+  return -1;
+}
+
+bool presetTogglePairAvailable() {
+  return deviceConfig.presetCount >= 2;
+}
+
+const char *presetNameForId(uint16_t presetId) {
+  const PedalPresetConfig *preset = DeviceConfigStore::findPreset(deviceConfig, presetId);
+  return preset != nullptr ? preset->name : "Not set";
+}
+
+uint16_t firstPresetIdExcept(uint16_t excludedPresetId) {
+  for (uint8_t i = 0; i < deviceConfig.presetCount; ++i) {
+    if (deviceConfig.presets[i].id != excludedPresetId) return deviceConfig.presets[i].id;
+  }
+  return UNASSIGNED_ID;
+}
+
+bool normalizePresetToggleSelection() {
+  if (deviceConfig.presetToggle.switchNumber < 1 ||
+      deviceConfig.presetToggle.switchNumber > deviceConfig.hardware.buttonCount) {
+    deviceConfig.presetToggle.switchNumber = 1;
+  }
+
+  if (!presetTogglePairAvailable()) {
+    deviceConfig.presetToggle.enabled = false;
+    deviceConfig.presetToggle.primaryPresetId = UNASSIGNED_ID;
+    deviceConfig.presetToggle.alternatePresetId = UNASSIGNED_ID;
+    return false;
+  }
+
+  if (DeviceConfigStore::findPreset(deviceConfig, deviceConfig.presetToggle.primaryPresetId) == nullptr) {
+    deviceConfig.presetToggle.primaryPresetId = deviceConfig.presets[0].id;
+  }
+  if (DeviceConfigStore::findPreset(deviceConfig, deviceConfig.presetToggle.alternatePresetId) == nullptr ||
+      deviceConfig.presetToggle.alternatePresetId == deviceConfig.presetToggle.primaryPresetId) {
+    deviceConfig.presetToggle.alternatePresetId =
+        firstPresetIdExcept(deviceConfig.presetToggle.primaryPresetId);
+  }
+  if (deviceConfig.presetToggle.alternatePresetId == UNASSIGNED_ID) {
+    deviceConfig.presetToggle.enabled = false;
+    return false;
+  }
+  return true;
+}
+
+bool savePresetToggleSettings() {
+  normalizePresetToggleSelection();
+  return configStore.save(deviceConfig);
+}
+
 void resetCurrentPresetState() {
   applyActivePreset();
   resetStompButtonStates();
@@ -1213,17 +1427,29 @@ void resetCurrentPresetState() {
 
 int assignmentOptionForSwitch(byte switchIndex) {
   if (switchIndex >= deviceConfig.hardware.buttonCount) return 0;
+  if (buttons[switchIndex].macroId != UNASSIGNED_ID) {
+    return assignmentOptionForMacro(buttons[switchIndex].macroId);
+  }
   return assignmentOptionForReference(buttons[switchIndex].assignment);
 }
 
 int menuItemCount() {
   switch (menuScreen) {
     case MenuScreen::Presets:
+      return deviceConfig.presetCount + 2;
+    case MenuScreen::PresetToggle:
+      return 5;
+    case MenuScreen::PresetToggleEnabled:
+      return 3;
+    case MenuScreen::PresetTogglePrimary:
+    case MenuScreen::PresetToggleAlternate:
       return deviceConfig.presetCount + 1;
+    case MenuScreen::PresetToggleSwitch:
+      return deviceConfig.hardware.buttonCount + 1;
     case MenuScreen::Switches:
       return deviceConfig.hardware.buttonCount + 1;
     case MenuScreen::Assignments:
-      return assignmentLibraryCount() + 2;
+      return assignmentOptionCount() + 2;
     case MenuScreen::MidiOutput:
       return 4;
     case MenuScreen::HomeDelay:
@@ -1302,10 +1528,114 @@ void drawMenuScreen() {
     case MenuScreen::Presets:
       header = "PRESETS";
       strncpy(secondary, activePresetConst().name, sizeof(secondary) - 1);
+      if (menuIndex < deviceConfig.presetCount) {
+        strncpy(primary, deviceConfig.presets[menuIndex].name, sizeof(primary) - 1);
+      } else if (menuIndex == deviceConfig.presetCount) {
+        strncpy(primary, "Page Toggle", sizeof(primary));
+        if (presetTogglePairAvailable()) {
+          snprintf(secondary,
+                   sizeof(secondary),
+                   "B%u / %s",
+                   deviceConfig.presetToggle.switchNumber,
+                   deviceConfig.presetToggle.enabled ? "On" : "Off");
+        } else {
+          strncpy(secondary, "Need 2 presets", sizeof(secondary) - 1);
+        }
+      } else {
+        strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::PresetToggle:
+      header = "PAGE TOGGLE";
+      normalizePresetToggleSelection();
+      switch (menuIndex) {
+        case 0:
+          strncpy(primary, "Enable", sizeof(primary));
+          strncpy(secondary,
+                  presetTogglePairAvailable()
+                      ? (deviceConfig.presetToggle.enabled ? "On" : "Off")
+                      : "Need 2 presets",
+                  sizeof(secondary) - 1);
+          break;
+        case 1:
+          strncpy(primary, "Primary Preset", sizeof(primary));
+          strncpy(secondary, presetNameForId(deviceConfig.presetToggle.primaryPresetId), sizeof(secondary) - 1);
+          break;
+        case 2:
+          strncpy(primary, "Alternate Preset", sizeof(primary));
+          strncpy(secondary, presetNameForId(deviceConfig.presetToggle.alternatePresetId), sizeof(secondary) - 1);
+          break;
+        case 3:
+          strncpy(primary, "Toggle Switch", sizeof(primary));
+          snprintf(secondary, sizeof(secondary), "Switch %u", deviceConfig.presetToggle.switchNumber);
+          break;
+        default:
+          strncpy(primary, "Back", sizeof(primary));
+          strncpy(secondary, "Return", sizeof(secondary) - 1);
+          break;
+      }
+      break;
+
+    case MenuScreen::PresetToggleEnabled:
+      header = "TOGGLE";
+      if (menuIndex >= 2) {
+        strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary) - 1);
+      } else {
+        const bool optionEnabled = menuIndex == 1;
+        strncpy(primary, optionEnabled ? "On" : "Off", sizeof(primary));
+        if (optionEnabled && !presetTogglePairAvailable()) {
+          strncpy(secondary, "Need 2 presets", sizeof(secondary) - 1);
+        } else {
+          strncpy(secondary,
+                  optionEnabled == deviceConfig.presetToggle.enabled ? "Current" : "Press to save",
+                  sizeof(secondary) - 1);
+        }
+      }
+      break;
+
+    case MenuScreen::PresetTogglePrimary:
+      header = "PRIMARY";
       if (menuIndex >= deviceConfig.presetCount) {
         strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary) - 1);
       } else {
         strncpy(primary, deviceConfig.presets[menuIndex].name, sizeof(primary) - 1);
+        strncpy(secondary,
+                deviceConfig.presets[menuIndex].id == deviceConfig.presetToggle.primaryPresetId
+                    ? "Current"
+                    : "Press to save",
+                sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::PresetToggleAlternate:
+      header = "ALTERNATE";
+      if (menuIndex >= deviceConfig.presetCount) {
+        strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary) - 1);
+      } else {
+        strncpy(primary, deviceConfig.presets[menuIndex].name, sizeof(primary) - 1);
+        strncpy(secondary,
+                deviceConfig.presets[menuIndex].id == deviceConfig.presetToggle.alternatePresetId
+                    ? "Current"
+                    : "Press to save",
+                sizeof(secondary) - 1);
+      }
+      break;
+
+    case MenuScreen::PresetToggleSwitch:
+      header = "SWITCH";
+      if (menuIndex >= deviceConfig.hardware.buttonCount) {
+        strncpy(primary, "Back", sizeof(primary));
+        strncpy(secondary, "Return", sizeof(secondary) - 1);
+      } else {
+        snprintf(primary, sizeof(primary), "Switch %d", menuIndex + 1);
+        strncpy(secondary,
+                menuIndex + 1 == deviceConfig.presetToggle.switchNumber ? "Current" : "Press to save",
+                sizeof(secondary) - 1);
       }
       break;
 
@@ -1315,27 +1645,55 @@ void drawMenuScreen() {
         strncpy(primary, "Back", sizeof(primary));
       } else {
         snprintf(primary, sizeof(primary), "Switch %d", menuIndex + 1);
-        assignmentLabelForOption(assignmentOptionForSwitch(menuIndex), secondary, sizeof(secondary));
+        if (presetToggleAppliesToButton(menuIndex)) {
+          strncpy(secondary, "Page toggle override", sizeof(secondary) - 1);
+          formatPresetToggleTargetLine(menuIndex, tertiary, sizeof(tertiary));
+        } else {
+          assignmentLabelForOption(assignmentOptionForSwitch(menuIndex), secondary, sizeof(secondary));
+        }
       }
       break;
     }
 
     case MenuScreen::Assignments: {
       header = activePresetConst().name;
-      if (menuIndex > assignmentLibraryCount()) {
+      const bool pageToggleOverride = menuSwitchIndex != NO_BUTTON_SELECTED &&
+                                      presetToggleAppliesToButton(menuSwitchIndex);
+      if (menuIndex > assignmentOptionCount()) {
         strncpy(primary, "Back", sizeof(primary));
         secondary[0] = '\0';
       } else if (menuIndex <= 0) {
         strncpy(primary, "Unassigned", sizeof(primary));
-        snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+        if (pageToggleOverride) {
+          strncpy(secondary, "Page toggle override", sizeof(secondary) - 1);
+          formatPresetToggleTargetLine(menuSwitchIndex, tertiary, sizeof(tertiary));
+        } else {
+          snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+        }
       } else {
+        const MacroConfig *macro = nullptr;
+        if (macroOptionAt(menuIndex, &macro) && macro != nullptr) {
+          strncpy(primary, macro->name, sizeof(primary) - 1);
+          if (pageToggleOverride) {
+            strncpy(secondary, "Page toggle override", sizeof(secondary) - 1);
+            formatPresetToggleTargetLine(menuSwitchIndex, tertiary, sizeof(tertiary));
+          } else {
+            snprintf(secondary, sizeof(secondary), "Macro / B%u", menuSwitchIndex + 1);
+          }
+          break;
+        }
         ButtonAssignmentRef reference{};
         const DeviceProfileConfig *profile = nullptr;
         const AssignmentConfig *assignment = nullptr;
         if (assignmentOptionAt(menuIndex, reference, &profile, &assignment) &&
             profile != nullptr && assignment != nullptr) {
           strncpy(primary, assignment->label, sizeof(primary) - 1);
-          snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+          if (pageToggleOverride) {
+            strncpy(secondary, "Page toggle override", sizeof(secondary) - 1);
+            formatPresetToggleTargetLine(menuSwitchIndex, tertiary, sizeof(tertiary));
+          } else {
+            snprintf(secondary, sizeof(secondary), "Switch %u", menuSwitchIndex + 1);
+          }
         } else {
           strncpy(primary, "Back", sizeof(primary));
           secondary[0] = '\0';
@@ -1477,6 +1835,11 @@ void exitMenu() {
 int mainMenuIndexForScreen(MenuScreen screen) {
   switch (screen) {
     case MenuScreen::Presets:
+    case MenuScreen::PresetToggle:
+    case MenuScreen::PresetToggleEnabled:
+    case MenuScreen::PresetTogglePrimary:
+    case MenuScreen::PresetToggleAlternate:
+    case MenuScreen::PresetToggleSwitch:
       return 0;
     case MenuScreen::Switches:
     case MenuScreen::Assignments:
@@ -1494,6 +1857,22 @@ int mainMenuIndexForScreen(MenuScreen screen) {
     case MenuScreen::ConfirmRestoreDefaults:
       return 5;
     case MenuScreen::Main:
+    default:
+      return 0;
+  }
+}
+
+int presetToggleMenuIndexForScreen(MenuScreen screen) {
+  switch (screen) {
+    case MenuScreen::PresetToggleEnabled:
+      return 0;
+    case MenuScreen::PresetTogglePrimary:
+      return 1;
+    case MenuScreen::PresetToggleAlternate:
+      return 2;
+    case MenuScreen::PresetToggleSwitch:
+      return 3;
+    case MenuScreen::PresetToggle:
     default:
       return 0;
   }
@@ -1523,6 +1902,16 @@ void menuBack() {
   if (menuScreen == MenuScreen::Assignments) {
     menuScreen = MenuScreen::Switches;
     menuIndex = menuSwitchIndex;
+  } else if (menuScreen == MenuScreen::PresetToggle) {
+    menuScreen = MenuScreen::Presets;
+    menuIndex = deviceConfig.presetCount;
+  } else if (menuScreen == MenuScreen::PresetToggleEnabled ||
+             menuScreen == MenuScreen::PresetTogglePrimary ||
+             menuScreen == MenuScreen::PresetToggleAlternate ||
+             menuScreen == MenuScreen::PresetToggleSwitch) {
+    const int parentIndex = presetToggleMenuIndexForScreen(menuScreen);
+    menuScreen = MenuScreen::PresetToggle;
+    menuIndex = parentIndex;
   } else if (menuScreen == MenuScreen::System) {
     menuScreen = MenuScreen::Main;
     menuIndex = mainMenuIndexForScreen(MenuScreen::System);
@@ -1616,11 +2005,103 @@ void selectMenuItem() {
       break;
 
     case MenuScreen::Presets:
+      if (menuIndex < deviceConfig.presetCount) {
+        setActivePresetIndex(menuIndex);
+      } else if (menuIndex == deviceConfig.presetCount) {
+        normalizePresetToggleSelection();
+        menuScreen = MenuScreen::PresetToggle;
+        menuIndex = 0;
+      } else {
+        menuBack();
+        return;
+      }
+      break;
+
+    case MenuScreen::PresetToggle:
+      switch (menuIndex) {
+        case 0:
+          menuScreen = MenuScreen::PresetToggleEnabled;
+          menuIndex = deviceConfig.presetToggle.enabled ? 1 : 0;
+          break;
+        case 1: {
+          normalizePresetToggleSelection();
+          const int primaryIndex = presetIndexForId(deviceConfig.presetToggle.primaryPresetId);
+          menuScreen = MenuScreen::PresetTogglePrimary;
+          menuIndex = primaryIndex >= 0 ? primaryIndex : 0;
+          break;
+        }
+        case 2: {
+          normalizePresetToggleSelection();
+          const int alternateIndex = presetIndexForId(deviceConfig.presetToggle.alternatePresetId);
+          menuScreen = MenuScreen::PresetToggleAlternate;
+          menuIndex = alternateIndex >= 0 ? alternateIndex : 0;
+          break;
+        }
+        case 3:
+          menuScreen = MenuScreen::PresetToggleSwitch;
+          menuIndex = deviceConfig.presetToggle.switchNumber > 0
+                          ? deviceConfig.presetToggle.switchNumber - 1
+                          : 0;
+          break;
+        default:
+          menuBack();
+          return;
+      }
+      break;
+
+    case MenuScreen::PresetToggleEnabled:
+      if (menuIndex >= 2) {
+        menuBack();
+        return;
+      }
+      normalizePresetToggleSelection();
+      if (menuIndex == 1 && !presetTogglePairAvailable()) {
+        deviceConfig.presetToggle.enabled = false;
+      } else {
+        deviceConfig.presetToggle.enabled = menuIndex == 1;
+      }
+      savePresetToggleSettings();
+      break;
+
+    case MenuScreen::PresetTogglePrimary:
       if (menuIndex >= deviceConfig.presetCount) {
         menuBack();
         return;
       }
-      setActivePresetIndex(menuIndex);
+      deviceConfig.presetToggle.primaryPresetId = deviceConfig.presets[menuIndex].id;
+      if (deviceConfig.presetToggle.alternatePresetId == deviceConfig.presetToggle.primaryPresetId) {
+        deviceConfig.presetToggle.alternatePresetId =
+            firstPresetIdExcept(deviceConfig.presetToggle.primaryPresetId);
+      }
+      savePresetToggleSettings();
+      menuScreen = MenuScreen::PresetToggle;
+      menuIndex = presetToggleMenuIndexForScreen(MenuScreen::PresetTogglePrimary);
+      break;
+
+    case MenuScreen::PresetToggleAlternate:
+      if (menuIndex >= deviceConfig.presetCount) {
+        menuBack();
+        return;
+      }
+      deviceConfig.presetToggle.alternatePresetId = deviceConfig.presets[menuIndex].id;
+      if (deviceConfig.presetToggle.primaryPresetId == deviceConfig.presetToggle.alternatePresetId) {
+        deviceConfig.presetToggle.primaryPresetId =
+            firstPresetIdExcept(deviceConfig.presetToggle.alternatePresetId);
+      }
+      savePresetToggleSettings();
+      menuScreen = MenuScreen::PresetToggle;
+      menuIndex = presetToggleMenuIndexForScreen(MenuScreen::PresetToggleAlternate);
+      break;
+
+    case MenuScreen::PresetToggleSwitch:
+      if (menuIndex >= deviceConfig.hardware.buttonCount) {
+        menuBack();
+        return;
+      }
+      deviceConfig.presetToggle.switchNumber = menuIndex + 1;
+      savePresetToggleSettings();
+      menuScreen = MenuScreen::PresetToggle;
+      menuIndex = presetToggleMenuIndexForScreen(MenuScreen::PresetToggleSwitch);
       break;
 
     case MenuScreen::Switches:
@@ -1634,11 +2115,11 @@ void selectMenuItem() {
       break;
 
     case MenuScreen::Assignments:
-      if (menuIndex > assignmentLibraryCount()) {
+      if (menuIndex > assignmentOptionCount()) {
         menuBack();
         return;
       }
-      applyAssignmentToButton(menuSwitchIndex, assignmentRefForOption(menuIndex));
+      applyAssignmentOptionToButton(menuSwitchIndex, menuIndex);
       saveButtonAssignment(menuSwitchIndex);
       menuScreen = MenuScreen::Switches;
       menuIndex = menuSwitchIndex;
@@ -1935,6 +2416,8 @@ void loop() {
   const int8_t nextEditEvent = updateEditButton(editNextButton, now);
   const int8_t encoderRotation = updateActiveEncoderRotation();
   const int8_t encoderSwitchEvent = updateActiveEncoderSwitch(now);
+
+  serviceMacroPlayback(now);
 
   if (menuMode) {
     serviceMenuControls(previousEditEvent, nextEditEvent, encoderRotation, encoderSwitchEvent, now);

@@ -24,6 +24,21 @@
           <span id="connection-dot" class="connection-dot"></span>
           <span id="connection-status">Connecting</span>
         </div>
+        <script>
+          (() => {
+            const status = document.getElementById("connection-status");
+            status.textContent = "Starting app";
+            window.setTimeout(() => {
+              if (status.textContent !== "Starting app") return;
+              const params = new URLSearchParams(window.location.search);
+              const retry = Number.parseInt(params.get("startupRetry") || "0", 10);
+              if (retry >= 2) return;
+              params.set("startupRetry", String(retry + 1));
+              params.set("_", String(Date.now()));
+              window.location.replace(`${window.location.pathname}?${params.toString()}`);
+            }, 4500);
+          })();
+        </script>
       </div>
     </div>
     <div class="header-actions">
@@ -38,13 +53,14 @@
       <button id="reload-device" class="icon-command" type="button" title="Reload from device" aria-label="Reload from device">
         <span aria-hidden="true">&#8635;</span>
       </button>
+      <button id="save-device-button" class="secondary-command" type="button">Save to device</button>
       <button id="save-button" class="primary-command" type="button">Save &amp; restart</button>
     </div>
   </header>
 
   <div class="preset-context">
     <label class="preset-selector">
-      <span>Editing preset</span>
+      <span>Editing pedal preset</span>
       <select id="preset-selector"></select>
     </label>
     <button id="set-active-preset" class="secondary-command" type="button">Set active</button>
@@ -56,6 +72,7 @@
   <nav class="tabs" aria-label="Configuration sections">
     <button class="tab is-active" type="button" data-tab="presets">Presets</button>
     <button class="tab" type="button" data-tab="assignments">Device Profiles</button>
+    <button class="tab" type="button" data-tab="macros">Macros</button>
     <button class="tab" type="button" data-tab="buttons">Stomp switches</button>
     <button class="tab" type="button" data-tab="device">Device</button>
   </nav>
@@ -148,9 +165,9 @@
             <table class="assignment-table">
               <thead>
                 <tr>
+                  <th scope="col">Display label</th>
                   <th scope="col">Message</th>
                   <th scope="col">Type</th>
-                  <th scope="col">Display label</th>
                   <th scope="col">Number</th>
                   <th scope="col">Values</th>
                   <th scope="col" class="actions-heading">Remove</th>
@@ -169,6 +186,56 @@
               <button id="export-profiles" class="secondary-command" type="button">Export profiles</button>
               <input id="profile-import-file" type="file" accept="application/json,.json" hidden>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="macros-panel" class="panel" data-panel="macros">
+      <div class="section-heading">
+        <div>
+          <h2>Macros</h2>
+          <span id="macro-count" class="record-count"></span>
+        </div>
+        <button id="add-macro" class="add-command" type="button">
+          <span aria-hidden="true">+</span> Add macro
+        </button>
+      </div>
+      <div class="profile-editor macro-editor">
+        <aside id="macro-list" class="profile-list" aria-label="Macros"></aside>
+        <div id="macro-empty" class="empty-panel">Create a macro to send multiple commands from one stomp switch.</div>
+        <div id="macro-detail" class="profile-detail" hidden>
+          <div class="form-grid profile-grid macro-header-grid">
+            <label class="field">
+              <span>Macro name</span>
+              <input id="macro-name" maxlength="24" autocomplete="off">
+            </label>
+            <div class="profile-actions">
+              <button id="duplicate-macro" class="secondary-command" type="button">Duplicate</button>
+              <button id="remove-macro" class="danger-command" type="button">Remove</button>
+            </div>
+          </div>
+          <div class="section-heading subheading">
+            <div>
+              <h2>Steps</h2>
+              <span id="macro-step-count" class="record-count"></span>
+            </div>
+            <button id="add-macro-step" class="add-command" type="button">
+              <span aria-hidden="true">+</span> Add step
+            </button>
+          </div>
+          <div class="table-shell">
+            <table class="assignment-table macro-table">
+              <thead>
+                <tr>
+                  <th scope="col">Device Profile</th>
+                  <th scope="col">Command</th>
+                  <th scope="col">Delay after</th>
+                  <th scope="col" class="actions-heading">Remove</th>
+                </tr>
+              </thead>
+              <tbody id="macro-step-rows"></tbody>
+            </table>
           </div>
         </div>
       </div>
